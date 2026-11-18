@@ -21,4 +21,9 @@ orders, never read out or type API keys (the user fills `.env`), and keep strate
 design and paper-test reasoning, not investment advice. The desks run as background loops of the
 session; if they have stopped, `run_desk.bat` and `run_daytrade.bat` start them again.
 
+**2026-11-18 restart:** the Windows PC went offline 2026-11-10 ~21:50 and the paper books were lost
+(never in git). Code restored from the transcript to github.com/navidcwhy/trading. Last known state
+(11-10 19:42): main $194.87 (−2.6 %, 9 positions), daytrade $200.05 (1 position, PEPE). Both books
+restart at $200; the one-week comparison restarts from the new start date.
+
 Related: [[user-replies-in-swedish]]

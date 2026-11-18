@@ -43,6 +43,34 @@ Skapa `FLATTEN`, så stängs allt. Ta bort filen för att fortsätta. För att b
 lägger du till deskens namn: `STOP.daytrade`, `FLATTEN.daytrade`, `STOP.main` eller `FLATTEN.main`.
 Det gör inget om Windows lägger till `.txt` i slutet av filnamnet.
 
+## Flyttad till GitHub (2026-11-18)
+
+Koden låg tidigare bara i en scratch-mapp på Windows-datorn. Den är återställd från sessionens
+transkript och verifierad: alla 41 tester går igenom, och varje fil stämmer med sessionens sista
+fulla läsning. Följande kom **inte** med:
+
+- **Papperböckerna** (`data/`). Huvuddesken hade 9 positioner och var −2,6 % ($194,87), och
+  daytrade-desken hade 1 position och var +0,03 % ($200,05), båda 10 nov kl. 19:42. Båda deskarna
+  startar om på $200, och veckojämförelsen börjar om från dag 0.
+- **`.env`**. Fyll i nycklarna igen: `cp .env.example .env`. Krypto kräver inga nycklar, men aktier
+  kräver Alpaca (paper) och Finnhub.
+- **Loggarna** (`logs/`).
+
+Starta på en ny dator (Python 3.12+, inga paket behövs):
+
+```
+git clone https://github.com/navidcwhy/trading && cd trading
+git checkout claude/trading-desk-migration-20pmkj
+python -m unittest tests.test_desk          # 41 tester, ska vara OK
+cp .env.example .env                        # fyll i nycklar själv
+./run_desk.sh & ./run_desk.sh daytrade &    # Windows: run_desk.bat och run_daytrade.bat
+python -m desk compare                      # jämför deskarna
+```
+
+Datorn behöver nå `api.binance.com`, `fapi.binance.com`, `www.binance.com`, `cointelegraph.com`,
+`www.coindesk.com`, `decrypt.co`, `finnhub.io`, `data.alpaca.markets` och `paper-api.alpaca.markets`.
+Filtret är fail-closed: om nyhetsflödena inte går att nå spärras alla köp.
+
 ## Två deskar sida vid sida
 
 Två paper-deskar körs samtidigt. De har samma agenter, samma filter, samma poängsättning och $200
