@@ -17,5 +17,5 @@ for p in "main:logs/console.log" "daytrade:logs/daytrade/console.log"; do
   echo "fel senaste timmen: $(awk -v t="$(date -d '-1 hour' +%H:%M:%S)" '$1 >= t' "$f" | grep -a -c -E 'Traceback|ERROR|desk exited')"
 done
 python3 -m desk compare 2>&1 | sed -n '3,16p'
-echo "senaste snapshot: $(tail -n 1 logs/cloud/state.log 2>/dev/null || echo 'ingen än')"
+echo "senaste snapshot: $(grep -a "^save:" logs/cloud/state.log 2>/dev/null | tail -n 1)"
 exit $down
