@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ..models import Candidate
 from ..sources.binance import BinanceData, underlying
-from ..util import HttpError, us_eastern
+from ..util import HttpError, age_sec, us_eastern
 
 LEVERAGED = re.compile(r"(UP|DOWN|BULL|BEAR)$")
 TOKENIZED_RETRY_SEC = 600
@@ -212,6 +212,7 @@ class Scout:
                 bid=float(q.get("bp") or 0), ask=float(q.get("ap") or 0), last=last,
                 volume_24h_usd=float(d.get("v") or 0) * last,
                 meta={"bid_size": float(q.get("bs") or 0), "ask_size": float(q.get("as") or 0),
+                      "quote_age_sec": age_sec(q.get("t")),
                       "today_volume": float(d.get("v") or 0), "step": 0.0001, "min_qty": 0.0001,
                       "min_notional": 1.0, "session_end_et": window[1].isoformat()}))
         return out

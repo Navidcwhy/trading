@@ -2,7 +2,7 @@
 for a check can't be fetched, the candidate dies (logged as such).
 
 Checks, cheapest first:
-  1 spread too wide        2 funding overheated (perps)   3 earnings today/tomorrow (stocks)
+  1 spread too wide or stale quote (stocks)   2 funding overheated (perps)   3 earnings today/tomorrow (stocks)
   4 volume < 30-day avg    5 thin order book              6 open news risk
 Gold/silver are perps, so they get the perp checks; their news check reads general
 market news (Finnhub) for the metal plus crypto news for the venue (Binance).
@@ -68,6 +68,17 @@ class FilterAgent:
         # 1. spread
         if c.bid <= 0 or c.ask <= 0 or c.ask < c.bid:
             return self._kill(c, "no valid bid/ask")
+        # A quote nobody has updated is no price at all: the free IEX feed often has none after
+        # the close, so the last one can be an hour old. Fail-closed, like a missing quote.
+        max_age = (self.f.get("max_quote_age_sec") or {}).get(c.market)
+        if max_age:
+            age = c.meta.get("quote_age_sec")
+            if age is None:
+                return self._kill(c, "quote time unavailable (fail-closed)")
+            if age > max_age:
+                return self._kill(c, f"stale quote: {age / 60:.0f} min old > {max_age / 60:g} min",
+                                  quote_age_sec=round(age), max=max_age)
+            chk["quote_age_sec"] = round(age)
         sp, mx = c.spread_pct, self.f["max_spread_pct"][c.market]
         if sp > mx:
             return self._kill(c, f"spread too wide: {sp:.3f}% > {mx}%", spread_pct=sp, max=mx)

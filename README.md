@@ -143,6 +143,13 @@ Finnhub (earnings och nyheter). Utan Finnhub dödas alla aktier av earnings-rege
 Alpaca tillåter bara limit-ordrar och inga stop-ordrar i extended hours. Därför övervakas stoppar
 för aktier av Risk, och aktiepositioner stängs 10 min innan after-hours slutar.
 
+Gratisplanens kursflöde (IEX) uppdateras sällan efter stängning: första kvällen var
+after-hours-kurserna 30–90 min gamla, och 18 nov köptes AES på en 1,5 h gammal kurs.
+Sedan dess dödar Filter aktier vars senaste bud/utbud är äldre än 5 min
+(`filter.max_quote_age_sec`), eller saknar tidsstämpel. Med IEX blir det i praktiken nästan
+inga aktieköp i after-hours. Alternativen är Alpacas 15 min fördröjda SIP-flöde (gratis, alla
+börser) eller realtids-SIP (betalplan).
+
 ## Ärliga begränsningar
 
 - **$200 och 10 % = ca $20 per trade.** Binance kräver minst $5 per order för de flesta instrument,

@@ -24,6 +24,7 @@
   "filter": {
     "fail_closed": true,
     "max_spread_pct": { "spot": 0.10, "perp": 0.10, "stock": 0.30 },
+    "max_quote_age_sec": { "stock": 300 },
     "earnings_kill_days_ahead": 1,
     "max_abs_funding_pct": 0.05,
     "min_volume_ratio_vs_30d": 1.0,

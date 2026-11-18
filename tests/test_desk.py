@@ -23,6 +23,7 @@ from desk.__main__ import desk_stats, split_profile
 from desk.models import Candidate, Signal, Survivor
 from desk.sources.news import CryptoNews, Finnhub, NewsAck
 from desk.store import Store
+from desk.util import age_sec
 
 CFG = Config(json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
 
@@ -199,6 +200,24 @@ class DeskTest(_Base):
             self.assertIn(expect, self.kills("filter")[-1]["reason"])
         ok = FilterAgent(CFG, FakeBn(), None, News([]), None, self.log).run([cand()])
         self.assertEqual(len(ok), 1)
+
+    def test_filter_kills_stale_or_undated_stock_quotes(self):
+        f = FilterAgent(CFG, None, None, None, None, self.log)
+        stock = lambda **m: cand(symbol="AES", base="AES", market="stock", bid=14.99, ask=15.03, **m)
+        self.assertEqual(f.run([stock(quote_age_sec=90 * 60)]), [])
+        self.assertIn("stale quote: 90 min old > 5 min", self.kills("filter")[-1]["reason"])
+        self.assertEqual(f.run([stock()]), [])
+        self.assertIn("quote time unavailable (fail-closed)", self.kills("filter")[-1]["reason"])
+        # a fresh quote gets past the check (and dies later here, without earnings data)
+        f.run([stock(quote_age_sec=20)])
+        self.assertNotIn("quote", self.kills("filter")[-1]["reason"])
+
+    def test_quote_age_from_alpaca_timestamps(self):
+        now = dt.datetime(2026, 11, 18, 22, 31, tzinfo=dt.timezone.utc)
+        self.assertEqual(age_sec("2026-11-18T21:01:00.287544391Z", now), 90 * 60)
+        self.assertEqual(age_sec("2026-11-18T22:31:30Z", now), 0.0)
+        for bad in (None, "", "garbage"):
+            self.assertIsNone(age_sec(bad, now))
 
     def test_scout_keeps_tokenized_stocks_out(self):
         vols = {"BTC": 9e9, "ETH": 8e9, "MUB": 7e9, "SOL": 6e9, "XRP": 5e9, "ADA": 4e9}

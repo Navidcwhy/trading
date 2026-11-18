@@ -70,6 +70,16 @@ def now_utc() -> dt.datetime:
     return dt.datetime.now(UTC)
 
 
+def age_sec(ts: str | None, now: dt.datetime | None = None) -> float | None:
+    """Seconds since a UTC RFC 3339 timestamp such as Alpaca's '2026-11-18T21:01:00.287544391Z'
+    (whole seconds are enough), or None if it is missing or unreadable."""
+    try:
+        t = dt.datetime.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return max(0.0, ((now or now_utc()) - t).total_seconds())
+
+
 def us_eastern(now: dt.datetime | None = None) -> dt.datetime:
     """Current US/Eastern wall time (naive). Implements the US DST rule directly so
     we don't depend on the tzdata package, which Windows Python lacks."""
