@@ -1,0 +1,10 @@
+{
+  "_about": "Daytrade-desken: bara skillnaderna mot config.json. Allt annat (universum, filter, analyst, storlek per trade, avgifter) är gemensamt. Startas med: python -m desk run --profile daytrade",
+
+  "risk": {
+    "stop_loss_pct": 3.0,
+    "take_profit_pct": 4.5,
+    "max_hold_hours": 8,
+    "reentry_cooldown_min": 120
+  }
+}

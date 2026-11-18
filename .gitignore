@@ -1,0 +1,12 @@
+# Secrets
+.env
+
+# Runtime state (paper books, logs, kill switches)
+data/
+logs/
+STOP*.txt
+FLATTEN*.txt
+preflight_ok.json
+
+__pycache__/
+*.pyc

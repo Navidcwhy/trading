@@ -1,0 +1,119 @@
+{
+  "mode": "paper",
+  "start_equity_usd": 200.0,
+
+  "loop": {
+    "scan_interval_sec": 300,
+    "monitor_interval_sec": 15,
+    "equity_snapshot_sec": 300
+  },
+
+  "universe": {
+    "crypto_core": ["BTC", "ETH"],
+    "crypto_top_alts": 15,
+    "include_spot": true,
+    "include_perps": true,
+    "crypto_exclude": ["USDT", "USDC", "FDUSD", "TUSD", "DAI", "USDP", "BUSD", "USDE", "PYUSD", "USD1", "BFUSD", "RLUSD", "XUSD", "EUR", "EURI", "AEUR", "WBTC", "WBETH", "STETH", "PAXG", "XAUT"],
+    "commodities": { "XAU": ["gold", "XAU"], "XAG": ["silver", "XAG"] },
+    "stocks_enabled": true,
+    "stocks_most_actives": 20,
+    "stocks_top_gainers": 10,
+    "stocks_min_price": 2.0
+  },
+
+  "filter": {
+    "fail_closed": true,
+    "max_spread_pct": { "spot": 0.10, "perp": 0.10, "stock": 0.30 },
+    "earnings_kill_days_ahead": 1,
+    "max_abs_funding_pct": 0.05,
+    "min_volume_ratio_vs_30d": 1.0,
+    "book_band_pct": 1.0,
+    "min_book_depth_usd": { "spot": 100000, "perp": 250000, "stock": 5000 },
+    "news_lookback_hours": { "crypto": 12, "stock": 24, "commodity": 12 },
+    "news_risk_keywords": [
+      "hack", "hacked", "exploit", "exploited", "drained", "breach", "stolen", "attack",
+      "lawsuit", "sued", "charges", "charged", "indicted", "indictment", "investigation", "probe", "subpoena",
+      "delist", "delisted", "delisting", "halt", "halted", "halts", "suspend", "suspended", "suspends", "outage",
+      "pauses withdrawals", "paused withdrawals", "withdrawals paused",
+      "freezes withdrawals", "froze withdrawals", "withdrawals frozen",
+      "bankrupt", "bankruptcy", "chapter 11", "insolvent", "insolvency", "default", "depeg", "depegged",
+      "rug pull", "fraud", "arrest", "arrested", "ban", "banned", "sanction", "sanctions",
+      "offering", "dilution", "downgrade", "downgraded", "guidance cut", "restatement", "short report",
+      "fda", "recall", "unlock", "token unlock", "liquidation"
+    ],
+    "crypto_news_feeds": [
+      "https://cointelegraph.com/rss",
+      "https://www.coindesk.com/arc/outboundfeeds/rss/",
+      "https://decrypt.co/feed"
+    ],
+    "venue_news_names": { "binance": ["Binance"], "alpaca": ["Alpaca"] },
+    "news_acknowledged": [
+      {
+        "note": "Binance hack 2026-10-29 ($6.3B): withdrawals resumed, losses covered",
+        "until": "2026-11-16",
+        "match_all": ["(?<![\\d.,])\\$?6[.,]3\\s*(?:b|bn|billion)\\b|\\bbinance(?:['’]s)?\\s+(?:hack|hackers?|heist)\\b|\\b(?:hack|heist)\\s+(?:of|on)\\s+binance\\b",
+                      "\\b(?:binance|hack\\w*|heist|exploit\\w*|stolen|theft|loot\\w*)\\b"],
+        "unless": ["\\b(?:another|new|second|third|fresh|renewed|separate)\\b(?:\\W+\\w+){0,2}?\\W+(?:hack|exploit|attack|breach|heist|theft|incident)\\b",
+                   "\\b(?:hacked|exploited|breached|drained|attacked|hit)\\s+again\\b"],
+        "ignore_words": ["hack", "hacked", "stolen", "exploit", "exploited", "drained", "breach", "attack",
+                         "investigation", "probe", "sanction", "sanctions", "charges", "charged",
+                         "indicted", "indictment", "arrest", "arrested"]
+      },
+      {
+        "note": "FinCEN cut MEXC off from the US financial system 2026-11-10 and Binance halted MEXC transfers. Still blocks: Binance halting its own withdrawals, deposits or trading, and action aimed at Binance itself",
+        "until": "2026-11-17",
+        "match_all": ["\\bmexc\\b"],
+        "unless": ["\\b(?:halt\\w*|suspend\\w*|paus\\w*|freez\\w*|froze\\w*|stop\\w*|clos\\w*|block\\w*)\\W+(?:(?:all|its|some)\\W+)?(?:withdrawals?|deposits?|trading|services?|operations?)\\b(?!\\W+(?:(?:and|or|withdrawals?|deposits?|transfers?|to|from|with|involving|for)\\W+){0,4}mexc\\b)",
+                   "\\b(?:sanction(?:s|ed|ing)?|ban(?:s|ned|ning)?|charg(?:e|es|ed|ing)|sues?|sued|suing|fin(?:e|es|ed)|prob(?:e|es|ed|ing)|investigat\\w*|indict\\w*|subpoena\\w*|target\\w*|cuts?\\s+off|suspend\\w*|halt\\w*)\\s+(?:(?!mexc\\b)\\w+\\s+)?binance\\b",
+                   "\\bbinance\\b\\W+(?:(?:is|was|gets?|got|been|being|now|also|reportedly)\\W+)*(?:sanctioned|banned|charged|sued|fined|probed|investigated|indicted|subpoenaed|targeted|suspended|halted|cut\\s+off)\\b(?!\\W+(?:(?:and|or|withdrawals?|deposits?|transfers?|to|from|with|involving|for)\\W+){0,4}mexc\\b)",
+                   "\\bbinance\\b(?:\\W+\\w+){0,2}?\\W+(?:faces?|facing|hit\\s+with|risks?|under)\\W+(?:\\w+\\W+){0,2}?(?:sanctions?|bans?|charges|fines?|probes?|investigations?|scrutiny)\\b"],
+        "ignore_words": ["halt", "halted", "halts", "suspend", "suspended", "suspends", "ban", "banned",
+                         "sanction", "sanctions"]
+      }
+    ]
+  },
+
+  "analyst": {
+    "min_score": 0.6,
+    "weights": {
+      "trend": 0.25,
+      "momentum": 0.20,
+      "rsi": 0.10,
+      "rel_volume": 0.15,
+      "volatility_fit": 0.10,
+      "spread": 0.05,
+      "book_imbalance": 0.10,
+      "funding": 0.05
+    }
+  },
+
+  "executor": {
+    "max_position_pct": 10.0,
+    "cash_buffer_pct": 0.5
+  },
+
+  "risk": {
+    "stop_loss_pct": 8.0,
+    "trail_activate_pct": 15.0,
+    "trail_pct": 8.0,
+    "max_open_positions": 10,
+    "one_position_per_asset": true,
+    "max_daily_drawdown_pct": 5.0,
+    "halt_below_equity_usd": 160.0,
+    "flatten_stocks_min_before_session_end": 10,
+    "no_stock_entries_min_before_session_end": 20,
+    "exchange_side_stops": true,
+    "stale_quote_alert_sec": 120
+  },
+
+  "paper": {
+    "fee_pct": { "spot": 0.10, "perp": 0.05, "stock": 0.0 },
+    "slippage_pct": 0.03
+  },
+
+  "venues": {
+    "binance_spot": { "testnet": "https://testnet.binance.vision", "live": "https://api.binance.com" },
+    "binance_futures": { "testnet": "https://testnet.binancefuture.com", "live": "https://fapi.binance.com" },
+    "alpaca_trading": { "testnet": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets" }
+  }
+}
