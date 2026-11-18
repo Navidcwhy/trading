@@ -37,8 +37,13 @@ def _parse_filters(filters: list[dict]) -> dict:
 
 
 class BinanceData:
-    def __init__(self):
+    def __init__(self, spot_base: str | None = None, perps: bool = True):
+        """spot_base: where spot market data comes from (default api.binance.com). Binance's
+        public mirror https://data-api.binance.vision serves the same data where api.binance.com
+        answers HTTP 451 (geo-block). perps=False: never call Binance futures (fapi has no mirror)."""
         self._cache: dict[str, tuple[float, object]] = {}
+        self.spot = (spot_base or SPOT).rstrip("/")
+        self.perps = perps
 
     def _cached(self, key, ttl, fn):
         hit = self._cache.get(key)
@@ -48,14 +53,13 @@ class BinanceData:
         self._cache[key] = (time.time(), val)
         return val
 
-    @staticmethod
-    def base_url(market: str) -> str:
-        return FUT if market == "perp" else SPOT
+    def base_url(self, market: str) -> str:
+        return FUT if market == "perp" else self.spot
 
     # ------------------------------------------------------------ metadata
     def spot_info(self) -> dict:
         def load():
-            data = http_json(f"{SPOT}/api/v3/exchangeInfo", {"permissions": "SPOT"}, timeout=30)
+            data = http_json(f"{self.spot}/api/v3/exchangeInfo", {"permissions": "SPOT"}, timeout=30)
             out = {}
             for s in data["symbols"]:
                 if s["status"] != "TRADING" or s["quoteAsset"] != "USDT":
@@ -68,6 +72,8 @@ class BinanceData:
     def fut_info(self) -> dict:
         """All tradable USDT perpetuals, crypto and TradFi (gold, silver, stocks...), tagged with
         contract_type and underlying_type (COIN, COMMODITY, EQUITY, INDEX...). Scout picks."""
+        if not self.perps:
+            return {}
         def load():
             data = http_json(f"{FUT}/fapi/v1/exchangeInfo", timeout=30)
             out = {}
@@ -105,6 +111,8 @@ class BinanceData:
         return {r["symbol"]: (float(r["bidPrice"]), float(r["askPrice"])) for r in rows}
 
     def premium_index(self, symbol: str | None = None) -> dict:
+        if not self.perps:
+            return {}
         rows = http_json(f"{FUT}/fapi/v1/premiumIndex", {"symbol": symbol} if symbol else None)
         rows = rows if isinstance(rows, list) else [rows]
         return {r["symbol"]: {"funding_rate": float(r["lastFundingRate"] or 0),

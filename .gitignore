@@ -4,8 +4,8 @@
 # Runtime state (paper books, logs, kill switches)
 data/
 logs/
-STOP*.txt
-FLATTEN*.txt
+/STOP*
+/FLATTEN*
 preflight_ok.json
 
 __pycache__/

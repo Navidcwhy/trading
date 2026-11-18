@@ -71,6 +71,23 @@ Datorn behöver nå `api.binance.com`, `fapi.binance.com`, `www.binance.com`, `c
 `www.coindesk.com`, `decrypt.co`, `finnhub.io`, `data.alpaca.markets` och `paper-api.alpaca.markets`.
 Filtret är fail-closed: om nyhetsflödena inte går att nå spärras alla köp.
 
+## Köra i molnet (Claude-session)
+
+```
+bash cloud/start.sh     # startar båda deskarna + snapshot-loopen; säker att köra igen
+bash cloud/health.sh    # läget: processer, senaste cykel, affärer, jämförelse
+```
+
+- **Geospärr:** molnet når inte `api.binance.com` eller `fapi.binance.com` (HTTP 451). Därför går
+  spot-data via Binances spegling `data-api.binance.vision`, och perps samt guld/silver är avstängda
+  (`DESK_BINANCE_SPOT_DATA` och `DESK_PERPS_OFF` i `.env`, som `start.sh` skriver). Agenterna och
+  reglerna är desamma. Båda deskarna har samma universum, så jämförelsen mellan dem är fortfarande
+  rättvis. På en dator i Sverige behövs ingen av inställningarna.
+- **Överlevnad:** böckerna sparas var 10:e minut till branchen `claude/trading-desk-state`, som har
+  en enda commit som skrivs över. I en ny container återställer `start.sh` dem automatiskt. Det man
+  kan förlora är upp till 10 minuters historik, och stopparna bevakas inte medan containern är nere.
+- **Nödstopp:** som vanligt, med `STOP`, `FLATTEN`, `STOP.daytrade` och så vidare i projektmappen.
+
 ## Två deskar sida vid sida
 
 Två paper-deskar körs samtidigt. De har samma agenter, samma filter, samma poängsättning och $200

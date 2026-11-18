@@ -52,13 +52,33 @@ class InstanceLock:
             self._fh = None
 
 
+def perps_off() -> bool:
+    """DESK_PERPS_OFF=1 in .env: this machine cannot reach Binance futures (e.g. HTTP 451 geo-block)."""
+    return (env("DESK_PERPS_OFF") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def apply_machine_overrides(universe: dict) -> list[str]:
+    """Per-machine switches from .env (not config.json, so every machine keeps the same rules).
+    Narrows the universe only; risk rules and books are untouched. Returns notes for the start line."""
+    notes = []
+    spot = env("DESK_BINANCE_SPOT_DATA")
+    if spot:
+        notes.append(f"spot data via {spot.split('//')[-1].rstrip('/')}")
+    if perps_off():
+        universe["include_perps"] = False
+        universe["commodities"] = {}  # gold/silver are perps on the same venue
+        notes.append("perps and gold/silver off (DESK_PERPS_OFF)")
+    return notes
+
+
 class Desk:
     def __init__(self, cfg: Config, console: bool = True):
         self.cfg = cfg
         self.mode = cfg.mode
         self.store = Store(cfg.data_dir / "desk.db")
         self.log = LoggerAgent(self.store, cfg.log_dir, self.mode, console)
-        self.bn = BinanceData()
+        self.bn = BinanceData(env("DESK_BINANCE_SPOT_DATA"), perps=not perps_off())
+        self.machine_notes = apply_machine_overrides(cfg["universe"])
         f = cfg.section("filter")
         self.news_acks = NewsAck(f.get("news_acknowledged"))
         self.cnews = CryptoNews(f["crypto_news_feeds"], f["news_risk_keywords"], f.get("venue_news_names", {}),
@@ -215,7 +235,8 @@ class Desk:
         self.log.event("desk", "start", f"desk started in {self.mode.upper()} mode [{self.cfg.desk_name}] | equity "
                        f"${self.brokers.total_equity():.2f} | rules: {self.risk.rules_summary()} | "
                        f"stocks {'on' if self.alpaca else 'off (no keys)'} | "
-                       f"stocks news/earnings {'on' if self.finnhub.available else 'off (no FINNHUB key -> fail-closed)'}")
+                       f"stocks news/earnings {'on' if self.finnhub.available else 'off (no FINNHUB key -> fail-closed)'}"
+                       + "".join(f" | {n}" for n in self.machine_notes))
         mon = threading.Thread(target=self._monitor_loop, name="risk-monitor", daemon=True)
         mon.start()
         last_scan = last_eq = 0.0

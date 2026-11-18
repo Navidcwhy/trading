@@ -17,7 +17,8 @@ from desk.agents.risk import Risk, rules_summary
 from desk.agents.scout import Scout
 from desk.brokers.paper import Brokers, PaperBroker
 from desk.config import ROOT, Config, _merge, load_config, profile_names
-from desk.desk import InstanceLock
+from desk.desk import InstanceLock, apply_machine_overrides
+from desk.sources.binance import BinanceData
 from desk.__main__ import desk_stats, split_profile
 from desk.models import Candidate, Signal, Survivor
 from desk.sources.news import CryptoNews, Finnhub, NewsAck
@@ -654,6 +655,36 @@ class InstanceLockTest(unittest.TestCase):
         self.assertTrue(other.acquire())        # another desk's book: fine
         first.release()
         self.assertTrue(second.acquire())       # free again once the holder is gone
+
+
+
+class MachineOverridesTest(unittest.TestCase):
+    """.env switches for a machine that cannot reach api.binance.com / fapi.binance.com (cloud, HTTP 451)."""
+
+    def test_perps_off_and_spot_mirror(self):
+        u = {"include_spot": True, "include_perps": True, "commodities": {"XAU": ["gold", "XAU"]}}
+        env = {"DESK_PERPS_OFF": "1", "DESK_BINANCE_SPOT_DATA": "https://data-api.binance.vision/"}
+        with mock.patch.dict(os.environ, env):
+            notes = apply_machine_overrides(u)
+        self.assertEqual(u, {"include_spot": True, "include_perps": False, "commodities": {}})
+        self.assertEqual(notes, ["spot data via data-api.binance.vision", "perps and gold/silver off (DESK_PERPS_OFF)"])
+
+    def test_without_switches_nothing_changes(self):
+        u = {"include_spot": True, "include_perps": True, "commodities": {"XAU": ["gold", "XAU"]}}
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("DESK_PERPS_OFF", None)
+            os.environ.pop("DESK_BINANCE_SPOT_DATA", None)
+            self.assertEqual(apply_machine_overrides(u), [])
+        self.assertEqual(u, {"include_spot": True, "include_perps": True, "commodities": {"XAU": ["gold", "XAU"]}})
+
+    def test_binance_without_perps_never_calls_futures(self):
+        bn = BinanceData("https://data-api.binance.vision/", perps=False)
+        with mock.patch("desk.sources.binance.http_json", side_effect=AssertionError("network call")):
+            self.assertEqual(bn.fut_info(), {})
+            self.assertEqual(bn.premium_index("BTCUSDT"), {})
+        self.assertEqual(bn.base_url("spot"), "https://data-api.binance.vision")
+        self.assertEqual(BinanceData().base_url("spot"), "https://api.binance.com")
+        self.assertEqual(BinanceData().base_url("perp"), "https://fapi.binance.com")
 
 
 if __name__ == "__main__":
