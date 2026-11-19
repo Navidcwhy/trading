@@ -5,7 +5,16 @@ Only Risk can seal an ApprovedOrder; the Executor won't trade without the seal.
 After entry: monitors every open position (default every 15 s):
   * exits at the stop (-8% from fill)
   * once a position has gained +15%, trails the stop at peak - 8% (stop only moves up)
-  * flattens stocks shortly before the after-hours session ends (no stops overnight)
+  * flattens stocks shortly before their session ends (regular close, or after-hours close if
+    stocks trade after hours): no stock positions overnight
+
+Leverage (paper only, risk.leverage, sized by the Executor): a trade at L x puts up margin_pct of
+equity for a position of margin * L. Risk tightens every price exit of such a trade (stop, take
+profit, trail start and trail distance) by exit_scale = max_position_pct / (margin_pct * L), at most 1,
+so it can never lose more than a normal max_position_pct trade at the normal stop. Risk also caps all
+open positions together at max_gross_exposure_pct of equity, charges interest on the borrowed part
+(borrow_apr_pct) and closes a position whose margin is nearly gone (margin_call_pct, a safety net
+behind the stop).
 
 Optional rules, off unless set in the risk section (used by the daytrade desk):
   * take_profit_pct: sell once the bid is that far above the entry price
@@ -53,6 +62,9 @@ class Risk:
 
     def __init__(self, cfg, store, brokers, quotes, alpaca, log, root):
         self.r = cfg.section("risk")
+        self.lev = self.r.get("leverage") or {}
+        self.max_position_pct = cfg.section("executor")["max_position_pct"]
+        self.stock_session = (cfg.get("universe") or {}).get("stocks_session", "regular")
         self.mode = cfg.mode
         self.store = store
         self.brokers = brokers
@@ -79,7 +91,7 @@ class Risk:
 
     # ------------------------------------------------------------ seal
     def _seal(self, t: OrderTicket, stop: float) -> str:
-        msg = f"{t.ticket_id}|{t.candidate.symbol}|{t.qty!r}|{stop!r}".encode()
+        msg = f"{t.ticket_id}|{t.candidate.symbol}|{t.qty!r}|{stop!r}|{t.leverage!r}".encode()
         return hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
 
     def verify_seal(self, a: ApprovedOrder) -> bool:
@@ -114,7 +126,7 @@ class Risk:
         if not self.alpaca:
             return None
         try:
-            w = self.alpaca.after_hours_window()
+            w = self.alpaca.session_window(self.stock_session)
         except HttpError:
             return None
         if not w:
@@ -156,19 +168,70 @@ class Risk:
             need = self.r["no_stock_entries_min_before_session_end"]
             if left is None or left < need:
                 return self._kill(c, f"too close to session end ({left and round(left)} min left < {need})")
-        pct = self.r["stop_loss_pct"]
+        k = 1.0
+        if t.leverage > 1:
+            why = self._leverage_refusal(t, open_pos)
+            if why:
+                return self._kill(c, why)
+            k = self.exit_scale(t.leverage)
+        pct = self.r["stop_loss_pct"] if k == 1 else round(self.r["stop_loss_pct"] * k, 2)
         stop = t.ref_price * (1 - pct / 100)
         if not (0 < stop < t.ref_price):
             return self._kill(c, f"invalid stop {stop}")
         appr = ApprovedOrder(ticket=t, stop_price=stop, stop_pct=pct,
-                             trail_activate_pct=self.r["trail_activate_pct"], trail_pct=self.r["trail_pct"],
-                             seal=self._seal(t, stop))
+                             trail_activate_pct=self.r["trail_activate_pct"] * k, trail_pct=self.r["trail_pct"] * k,
+                             seal=self._seal(t, stop), exit_scale=k)
         tp, max_h = self._opt("take_profit_pct"), self._opt("max_hold_hours")
-        extra = (f", take profit +{tp:g}%" if tp else "") + (f", max hold {max_h:g}h" if max_h else "")
+        extra = (f", take profit +{self._pct(tp, k):g}%" if tp else "") + (f", max hold {max_h:g}h" if max_h else "")
+        levered = f" at {t.leverage}x (margin ${t.notional / t.leverage:.2f})" if t.leverage > 1 else ""
         self.log.event("risk", "approved",
-                       f"{c.key} approved: ${t.notional:.2f}, stop {stop:.6g} (-{pct}%), "
+                       f"{c.key} approved: ${t.notional:.2f}{levered}, stop {stop:.6g} (-{pct}%), "
                        f"max loss ${t.notional * pct / 100:.2f}{extra}")
         return appr
+
+    # ------------------------------------------------------------ leverage
+    def exit_scale(self, leverage: float) -> float:
+        """How much tighter a trade at `leverage` x exits: 1 = as usual. Keeps the most a trade can
+        lose at its stop at or under that of a normal (max_position_pct) trade."""
+        if leverage <= 1:
+            return 1.0
+        return min(1.0, self.max_position_pct / (self.lev["margin_pct"] * leverage))
+
+    @staticmethod
+    def _pct(v: float, k: float) -> float:
+        return v if k == 1 else round(v * k, 2)
+
+    def _leverage_refusal(self, t: OrderTicket, open_pos) -> str | None:
+        c = t.candidate
+        if self.mode != "paper":
+            return "leverage is paper-only"
+        mx = int(self.lev.get("max_x") or 1)
+        if t.leverage > mx or c.market not in self.lev.get("markets", ()):
+            return f"leverage {t.leverage}x not allowed for {c.market} (max {mx}x)"
+        equity = self.brokers.total_equity()
+        gross = sum(p.qty * p.last_price for p in open_pos) + t.notional
+        cap = equity * self.lev.get("max_gross_exposure_pct", 100) / 100
+        if gross > cap:
+            return f"gross exposure ${gross:.2f} would pass {self.lev.get('max_gross_exposure_pct', 100):g}% of equity (${cap:.2f})"
+        return None
+
+    def _borrow(self, p, now: float | None = None):
+        """Paper only: interest on the borrowed part of a leveraged spot/stock position, charged
+        from cash every hour (and at exit) and counted in its funding_paid."""
+        if self.mode != "paper" or p.leverage <= 1 or p.market == "perp":
+            return
+        apr = (self.lev.get("borrow_apr_pct") or {}).get(p.market, 0)
+        now = now or time.time()
+        borrowed = p.qty * p.entry_price - p.margin_used
+        if apr <= 0 or borrowed <= 0 or not p.last_funding_ts:
+            return
+        cost = borrowed * apr / 100 * (now - p.last_funding_ts) / (365 * 86400)
+        if cost <= 0:
+            return
+        self.brokers.for_venue(p.venue).adjust_cash(-cost)
+        p.funding_paid += cost
+        p.last_funding_ts = now
+        self.store.update_position(p.id, funding_paid=p.funding_paid, last_funding_ts=now)
 
     def anchor_stop(self, appr: ApprovedOrder, fill_price: float) -> float:
         """Stop is defined as -stop_pct from the actual entry; never looser than pre-entry stop
@@ -220,13 +283,14 @@ class Risk:
             self._stale.pop(p.id, None)
             bid = q[0]
             peak = max(p.peak_price, bid)
-            stop, trail = p.stop_price, p.trail_active
-            if peak >= p.entry_price * (1 + self.r["trail_activate_pct"] / 100):
+            stop, trail, k = p.stop_price, p.trail_active, p.exit_scale
+            trail_pct = self._pct(self.r["trail_pct"], k)
+            if peak >= p.entry_price * (1 + self.r["trail_activate_pct"] * k / 100):
                 if not trail:
                     self.log.event("risk", "trail_on", f"{p.symbol} +{(peak / p.entry_price - 1) * 100:.1f}%: "
-                                   f"trailing stop activated ({self.r['trail_pct']}% below peak)")
+                                   f"trailing stop activated ({trail_pct}% below peak)")
                 trail = True
-                stop = max(stop, peak * (1 - self.r["trail_pct"] / 100))
+                stop = max(stop, peak * (1 - trail_pct / 100))
             raised = stop > p.stop_price * 1.000001
             self.store.update_position(p.id, last_price=bid, last_ts=now, peak_price=peak,
                                        stop_price=stop, trail_active=int(trail))
@@ -242,16 +306,21 @@ class Risk:
                         self.log.event("risk", "stop_replace", f"{p.symbol}: stop replace failed: {e} "
                                        "(client-side stop still active)", level="error")
             self._funding(p)
+            if p.leverage > 1 and now - (p.last_funding_ts or now) >= 3600:
+                self._borrow(p, now)
             reason = None
             if bid <= stop:
-                reason = "trailing stop" if trail else f"stop -{self.r['stop_loss_pct']}%"
-            elif tp and bid >= p.entry_price * (1 + tp / 100):
-                reason = f"take profit +{tp:g}%"
+                reason = "trailing stop" if trail else f"stop -{self._pct(self.r['stop_loss_pct'], k)}%"
+            elif tp and bid >= p.entry_price * (1 + self._pct(tp, k) / 100):
+                reason = f"take profit +{self._pct(tp, k):g}%"
+            elif p.leverage > 1 and p.value - p.funding_paid <= p.margin_used * self.lev.get("margin_call_pct", 20) / 100:
+                reason = "margin call"
             elif flatten_all:
                 reason = "manual FLATTEN"
             elif p.market == "stock" and (stock_left is None
                                           or stock_left <= self.r["flatten_stocks_min_before_session_end"]):
-                reason = "flatten before after-hours close"
+                reason = ("flatten before after-hours close" if self.stock_session == "after_hours"
+                          else "flatten before the close")
             elif max_h and now - p.entry_ts >= max_h * 3600:
                 reason = f"time exit {max_h:g}h"
             if reason:
@@ -291,6 +360,7 @@ class Risk:
 
     def exit(self, p, reason: str, quote):
         broker = self.brokers.for_venue(p.venue)
+        self._borrow(p)            # interest up to now (leveraged paper positions only)
         fill = None
         if self.mode != "paper" and p.stop_order_id:
             try:

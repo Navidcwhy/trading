@@ -80,6 +80,22 @@ def age_sec(ts: str | None, now: dt.datetime | None = None) -> float | None:
     return max(0.0, ((now or now_utc()) - t).total_seconds())
 
 
+# Share of a normal US regular session's volume that has traded, every 30 minutes from the 09:30 open
+# to the 16:00 close: busy open, quiet lunch, heavy close (the closing auction is the last jump).
+# A rough market-wide shape, not per stock; good enough to judge "is volume normal for this hour".
+US_VOLUME_CURVE = (0.0, 0.13, 0.21, 0.28, 0.34, 0.40, 0.45, 0.50, 0.55, 0.60, 0.66, 0.73, 0.82, 1.0)
+
+
+def expected_volume_fraction(minutes_since_open: float, session_minutes: float = 390) -> float:
+    """Share of a full session's volume a normal day has traded `minutes_since_open` into the session
+    (a half day is squeezed onto the same curve). Never below 0.02, so the first minutes don't divide
+    by almost nothing."""
+    curve = US_VOLUME_CURVE
+    x = clamp(minutes_since_open / session_minutes if session_minutes > 0 else 1.0) * (len(curve) - 1)
+    i = min(int(x), len(curve) - 2)
+    return max(0.02, curve[i] + (x - i) * (curve[i + 1] - curve[i]))
+
+
 def us_eastern(now: dt.datetime | None = None) -> dt.datetime:
     """Current US/Eastern wall time (naive). Implements the US DST rule directly so
     we don't depend on the tzdata package, which Windows Python lacks."""

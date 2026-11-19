@@ -1,5 +1,8 @@
-"""Agent 1 - Scout. Watches BTC, ETH, top alts (spot + USD-M perps) and gold/silver
-(Binance TradFi perps) 24/7, and US stocks during the after-hours session.
+"""Agent 1 - Scout. Watches BTC, ETH, top alts (spot + USD-M perps) and gold/silver 24/7, and US
+stocks and ETFs during the US regular session (or after-hours, if configured).
+Gold/silver are Binance TradFi perps; where perps are off, gold is a gold token on Binance spot
+(XAUT/PAXG, one token = one troy ounce). The stock watchlist (Nasdaq-100, gold, silver and Sweden
+ETFs) is scouted every cycle of the session, next to the most active stocks and top gainers.
 Emits Candidates; decides nothing."""
 from __future__ import annotations
 
@@ -10,10 +13,11 @@ from pathlib import Path
 
 from ..models import Candidate
 from ..sources.binance import BinanceData, underlying
-from ..util import HttpError, age_sec, us_eastern
+from ..util import HttpError, age_sec, expected_volume_fraction, us_eastern
 
 LEVERAGED = re.compile(r"(UP|DOWN|BULL|BEAR)$")
 TOKENIZED_RETRY_SEC = 600
+SESSION_LABEL = {"regular": "regular session", "after_hours": "after-hours session"}
 
 
 class Scout:
@@ -29,9 +33,10 @@ class Scout:
         self._tok_saved: set[str] | None = None
         self._tok_retry_at = 0.0
         self._perp_cache = None
+        self._spot_cache = None
 
     def scan(self) -> list[Candidate]:
-        self._perp_cache = None  # fetch perp market data at most once per scan
+        self._perp_cache = self._spot_cache = None  # fetch market data at most once per scan
         out: list[Candidate] = []
         if self.u.get("include_spot") or self.u.get("include_perps"):
             out += self._crypto()
@@ -104,17 +109,21 @@ class Scout:
                          "tokenized stocks kept out of top alts: " + ", ".join(skipped_tok))
         return bases
 
+    def _spot_data(self):
+        """(exchange info, 24h tickers, book tickers) for all spot pairs, once per scan."""
+        if self._spot_cache is None:
+            self._spot_cache = (self.bn.spot_info(), self.bn.tickers_24h("spot"), self.bn.books("spot"))
+        return self._spot_cache
+
     def _crypto(self) -> list[Candidate]:
         out = []
-        sinfo = self.bn.spot_info()
-        stick = self.bn.tickers_24h("spot")
+        sinfo, stick, books = self._spot_data()
         tokenized = self._tokenized_stocks()
         if tokenized is None:
             bases = [b for b in self.u.get("crypto_core", ["BTC", "ETH"]) if f"{b}USDT" in sinfo]
         else:
             bases = self._pick_bases(sinfo, stick, tokenized)
         if self.u.get("include_spot"):
-            books = self.bn.books("spot")
             for b in bases:
                 sym = f"{b}USDT"
                 if sym not in sinfo or sym not in stick or sym not in books:
@@ -159,23 +168,43 @@ class Scout:
 
     # ------------------------------------------------------------------ commodities
     def _commodities(self) -> list[Candidate]:
-        """Gold, silver etc. as Binance USDT-margined TradFi perpetuals (traded 24/7).
-        They run through the same pipeline as crypto perps; Filter checks their news
-        against general market news instead of crypto news."""
-        finfo, ftick, fbooks, prem = self._perp_data()
+        """Gold, silver etc. 24/7: a Binance USDT-margined TradFi perpetual where perps are on, else a
+        token on Binance spot that holds the metal (universe.commodity_spot_tokens, e.g. XAUT/PAXG
+        for gold). Either way the candidate's base is the metal, so the desk never holds gold twice,
+        and Filter checks general market news for the metal instead of crypto news for the coin."""
         out = []
+        use_perps = self.u.get("include_perps")      # off where Binance futures are geo-blocked
+        tokens = self.u.get("commodity_spot_tokens") or {}
         for base, names in self.u["commodities"].items():
-            sym = f"{base}USDT"
-            info = finfo.get(sym, {})
-            c = None
-            if info.get("underlying_type") == "COMMODITY":
-                c = self._perp_candidate(sym, base, info, ftick, fbooks, prem,
-                                         asset_class="commodity", news_names=list(names))
+            c = how = None
+            if use_perps:
+                finfo, ftick, fbooks, prem = self._perp_data()
+                sym = f"{base}USDT"
+                info = finfo.get(sym, {})
+                if info.get("underlying_type") == "COMMODITY":
+                    c = self._perp_candidate(sym, base, info, ftick, fbooks, prem,
+                                             asset_class="commodity", news_names=list(names))
+                    how = f"{sym} (commodity perp, 24/7)"
+            if c is None and tokens.get(base):
+                sinfo, stick, books = self._spot_data()
+                for tok in tokens[base]:
+                    sym = f"{tok}USDT"
+                    if sym in sinfo and sym in stick and sym in books:
+                        t, (bid, ask) = stick[sym], books[sym]
+                        c = Candidate(
+                            symbol=sym, base=base, market="spot", venue="binance_spot", bid=bid, ask=ask,
+                            last=float(t["lastPrice"]), volume_24h_usd=float(t["quoteVolume"]),
+                            meta={**sinfo[sym], "change_24h_pct": float(t["priceChangePercent"]),
+                                  "asset_class": "commodity", "news_names": list(names), "token": tok})
+                        how = f"{sym} ({tok} token = 1 oz of {base}, spot, 24/7)"
+                        break
             if c is None:
-                self._status(f"commodity:{base}", "missing",
-                             f"{base}: no tradable commodity perp {sym} on Binance", level="warn")
+                why = "no commodity perp" + (" or token" if tokens.get(base) else "") + " on Binance"
+                if not use_perps:
+                    why = "perps are off and " + ("no token is listed" if tokens.get(base) else "it has no spot token")
+                self._status(f"commodity:{base}", "missing", f"{base}: not scouted 24/7 ({why})", level="warn")
                 continue
-            self._status(f"commodity:{base}", "ok", f"{base}: scouting {sym} (commodity perp, 24/7)")
+            self._status(f"commodity:{base}", how, f"{base}: scouting {how}")
             out.append(c)
         return out
 
@@ -187,19 +216,29 @@ class Scout:
         if not self.alpaca:
             self._stock_status("nokeys", "US stocks off: no ALPACA_KEY_ID/ALPACA_SECRET_KEY in .env")
             return []
+        session = self.u.get("stocks_session", "regular")
+        label = SESSION_LABEL[session]
         try:
-            window = self.alpaca.after_hours_window()
+            window = self.alpaca.session_window(session)
         except HttpError as e:
             self._stock_status("err", f"US stocks: calendar unavailable ({e})")
             return []
         now = us_eastern()
         if not window or not (window[0] <= now < window[1]):
-            self._stock_status("closed", "US stocks: outside after-hours session, scouting crypto only")
+            self._stock_status("closed", f"US stocks: outside the {label}, scouting crypto only")
             return []
-        self._stock_status("open", f"US stocks: after-hours open until {window[1]:%H:%M} ET")
-        syms = list(dict.fromkeys(self.alpaca.most_actives(self.u.get("stocks_most_actives", 20))
+        self._stock_status("open", f"US stocks: {label} open until {window[1]:%H:%M} ET")
+        watch = self.u.get("stocks_watchlist") or {}
+        syms = list(dict.fromkeys(list(watch)
+                                  + self.alpaca.most_actives(self.u.get("stocks_most_actives", 20))
                                   + self.alpaca.top_gainers(self.u.get("stocks_top_gainers", 10))))
         snaps = self.alpaca.snapshots(syms)
+        # today's volume is compared with what a normal day has traded by this time of the session
+        frac = 1.0
+        if session == "regular":
+            frac = expected_volume_fraction((now - window[0]).total_seconds() / 60,
+                                            (window[1] - window[0]).total_seconds() / 60)
+        today = now.date().isoformat()
         out = []
         for sym, s in snaps.items():
             q, t, d = s.get("latestQuote") or {}, s.get("latestTrade") or {}, s.get("dailyBar") or {}
@@ -207,12 +246,17 @@ class Scout:
             if last < self.u.get("stocks_min_price", 2.0):
                 self.log.kill("scout", sym, "stock", f"price ${last:.2f} below universe minimum")
                 continue
+            # before today's first trade the snapshot still shows yesterday's bar
+            vol = float(d.get("v") or 0) if str(d.get("t") or "").startswith(today) else 0.0
+            meta = {"bid_size": float(q.get("bs") or 0), "ask_size": float(q.get("as") or 0),
+                    "quote_age_sec": age_sec(q.get("t")),
+                    "today_volume": vol, "expected_volume_frac": round(frac, 4),
+                    "step": 0.0001, "min_qty": 0.0001, "min_notional": 1.0, "session": session,
+                    "session_end_et": window[1].isoformat()}
+            if sym in watch:
+                meta["watchlist"] = True
             out.append(Candidate(
-                symbol=sym, base=sym, market="stock", venue="alpaca",
+                symbol=sym, base=watch.get(sym) or sym, market="stock", venue="alpaca",
                 bid=float(q.get("bp") or 0), ask=float(q.get("ap") or 0), last=last,
-                volume_24h_usd=float(d.get("v") or 0) * last,
-                meta={"bid_size": float(q.get("bs") or 0), "ask_size": float(q.get("as") or 0),
-                      "quote_age_sec": age_sec(q.get("t")),
-                      "today_volume": float(d.get("v") or 0), "step": 0.0001, "min_qty": 0.0001,
-                      "min_notional": 1.0, "session_end_et": window[1].isoformat()}))
+                volume_24h_usd=vol * last, meta=meta))
         return out

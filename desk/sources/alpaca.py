@@ -37,14 +37,21 @@ class AlpacaData:
         self._cal = (today, day)
         return day
 
-    def after_hours_window(self) -> tuple[dt.datetime, dt.datetime] | None:
-        """(start, end) of today's after-hours session in ET naive datetimes, or None."""
+    SESSIONS = {"regular": ("open", "close"), "after_hours": ("close", "session_close")}
+
+    def session_window(self, kind: str = "regular") -> tuple[dt.datetime, dt.datetime] | None:
+        """(start, end) of today's 'regular' session (09:30-16:00 ET, shorter on half days) or its
+        'after_hours' session (16:00-20:00 ET), as ET naive datetimes; None when the market is closed."""
+        start_key, end_key = self.SESSIONS[kind]
         day = self.session_today()
-        if not day or not day.get("close") or not day.get("session_close"):
+        if not day or not day.get(start_key) or not day.get(end_key):
             return None
         d = dt.date.fromisoformat(day["date"])
         hm = lambda s: dt.datetime.combine(d, dt.time(int(s[:2]), int(s[3:5])))
-        return hm(day["close"]), hm(day["session_close"])
+        return hm(day[start_key]), hm(day[end_key])
+
+    def after_hours_window(self) -> tuple[dt.datetime, dt.datetime] | None:
+        return self.session_window("after_hours")
 
     # ------------------------------------------------------------ universe
     def most_actives(self, top: int) -> list[str]:

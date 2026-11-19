@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from desk.agents.executor import Executor
+from desk.agents.executor import Executor, leverage_for
 from desk.agents.filter import FilterAgent
 from desk.agents.logger import LoggerAgent
 from desk.agents.risk import Risk, rules_summary
@@ -23,7 +23,7 @@ from desk.__main__ import desk_stats, split_profile
 from desk.models import Candidate, Signal, Survivor
 from desk.sources.news import CryptoNews, Finnhub, NewsAck
 from desk.store import Store
-from desk.util import age_sec
+from desk.util import age_sec, expected_volume_fraction, us_eastern
 
 CFG = Config(json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
 
@@ -686,7 +686,14 @@ class MachineOverridesTest(unittest.TestCase):
         with mock.patch.dict(os.environ, env):
             notes = apply_machine_overrides(u)
         self.assertEqual(u, {"include_spot": True, "include_perps": False, "commodities": {}})
-        self.assertEqual(notes, ["spot data via data-api.binance.vision", "perps and gold/silver off (DESK_PERPS_OFF)"])
+        self.assertEqual(notes, ["spot data via data-api.binance.vision", "perps off (DESK_PERPS_OFF), gold/silver off"])
+        # with a gold token on spot, gold stays (as the token) and silver, which has none, goes
+        u = {"include_perps": True, "commodities": {"XAU": ["gold"], "XAG": ["silver"]},
+             "commodity_spot_tokens": {"XAU": ["XAUT", "PAXG"]}}
+        with mock.patch.dict(os.environ, {"DESK_PERPS_OFF": "1"}):
+            notes = apply_machine_overrides(u)
+        self.assertEqual((u["include_perps"], u["commodities"]), (False, {"XAU": ["gold"]}))
+        self.assertEqual(notes[-1], "perps off (DESK_PERPS_OFF), XAU via spot token")
 
     def test_without_switches_nothing_changes(self):
         u = {"include_spot": True, "include_perps": True, "commodities": {"XAU": ["gold", "XAU"]}}
@@ -704,6 +711,301 @@ class MachineOverridesTest(unittest.TestCase):
         self.assertEqual(bn.base_url("spot"), "https://data-api.binance.vision")
         self.assertEqual(BinanceData().base_url("spot"), "https://api.binance.com")
         self.assertEqual(BinanceData().base_url("perp"), "https://fapi.binance.com")
+
+
+def copy_cfg(**universe):
+    cfg = Config(json.loads(json.dumps(CFG)))
+    cfg["universe"].update(universe)
+    return cfg
+
+
+class MarketsTest(_Base):
+    """Filter floor, US regular session with the ETF watchlist, gold as a spot token."""
+
+    def test_volume_floor_is_a_dead_market_check(self):
+        class FakeBn:
+            def __init__(s, ratio): s.avg = 1e9 / ratio          # cand() trades $1e9 in 24 h
+            def avg_daily_quote_volume(s, *a): return s.avg
+            def depth(s, *a): return {"bids": [(99.9, 1e5)], "asks": [(100.1, 1e5)]}
+
+        class News:
+            def risk_for(s, *a): return []
+
+        run = lambda ratio: FilterAgent(CFG, FakeBn(ratio), None, News(), None, self.log).run([cand()])
+        self.assertEqual(CFG["filter"]["min_volume_ratio_vs_30d"], 0.6)
+        self.assertEqual(len(run(0.7)), 1)                       # a quiet day passes
+        self.assertEqual(run(0.5), [])                           # a dead one doesn't
+        self.assertIn("volume under 30d avg: 0.50x < 0.6x", self.kills("filter")[-1]["reason"])
+
+    def test_expected_volume_fraction(self):
+        self.assertEqual(expected_volume_fraction(0), 0.02)                  # floor at the open
+        self.assertAlmostEqual(expected_volume_fraction(30), 0.13)
+        self.assertAlmostEqual(expected_volume_fraction(195), 0.475)         # 12:45 ET
+        self.assertAlmostEqual(expected_volume_fraction(105, 210), 0.475)    # half day, same point
+        self.assertEqual(expected_volume_fraction(390), 1.0)
+        self.assertEqual(expected_volume_fraction(500), 1.0)
+
+    def test_stock_volume_is_judged_for_the_time_of_day(self):
+        class Alpaca:
+            def avg_daily_volume(s, sym, days): return 1000.0
+
+        class Fh:
+            def earnings_dates(s, a, b): return {}
+            def news_risk(s, sym, lb): return []
+
+        stock = lambda vol, frac: cand(symbol="QQQ", base="NDX", market="stock", bid=100.0, ask=100.02,
+                                       quote_age_sec=5, bid_size=300, ask_size=300, today_volume=vol,
+                                       expected_volume_frac=frac)
+        f = FilterAgent(CFG, None, Alpaca(), None, Fh(), self.log)
+        self.assertEqual(len(f.run([stock(400, 0.475)])), 1)       # 400 by 12:45 = 0.84x a normal day
+        self.assertEqual(f.run([stock(400, 1.0)]), [])             # the same 400 at the close = 0.40x
+        self.assertIn("volume under 30d avg: 0.40x < 0.6x", self.kills("filter")[-1]["reason"])
+        self.assertEqual(f.run([stock(200, 0.475)]), [])
+        self.assertIn("for this time of day: 0.42x", self.kills("filter")[-1]["reason"])
+        # IEX shows 100 shares at the top of the book: $4,000 of SLV is enough for $20 orders
+        thin = cand(symbol="SLV", base="XAG", market="stock", bid=40.0, ask=40.02, quote_age_sec=5,
+                    bid_size=100, ask_size=100, today_volume=900, expected_volume_frac=1.0)
+        self.assertEqual(len(f.run([thin])), 1)
+
+    def test_scout_regular_session_with_watchlist(self):
+        class Alpaca:
+            def session_window(s, kind="regular"):
+                s.kind = kind
+                return dt.datetime(2026, 11, 19, 9, 30), dt.datetime(2026, 11, 19, 16, 0)
+            def most_actives(s, n): return ["NVDA", "QQQ"]
+            def top_gainers(s, n): return ["PENNY"]
+            def snapshots(s, syms):
+                s.syms = syms
+                q = {"bp": 100.0, "ap": 100.02, "bs": 300, "as": 200, "t": "2026-11-19T17:44:50Z"}
+                snap = lambda px, day, v: {"latestQuote": q, "latestTrade": {"p": px},
+                                           "dailyBar": {"t": f"{day}T05:00:00Z", "v": v}}
+                return {"QQQ": snap(100.01, "2026-11-19", 5000), "GLD": snap(100.01, "2026-11-18", 9000),
+                        "NVDA": snap(100.01, "2026-11-19", 7000), "PENNY": snap(1.5, "2026-11-19", 1)}
+
+        cfg = copy_cfg(include_spot=False, include_perps=False, commodities={},
+                       stocks_watchlist={"QQQ": "NDX", "GLD": "XAU"})
+        a = Alpaca()
+        with mock.patch("desk.agents.scout.us_eastern", return_value=dt.datetime(2026, 11, 19, 12, 45)):
+            got = {c.symbol: c for c in Scout(cfg, None, a, self.log, self.tmp / "tok.json").scan()}
+        self.assertEqual(a.kind, "regular")
+        self.assertEqual(a.syms[:2], ["QQQ", "GLD"])                # the watchlist comes every cycle
+        self.assertEqual(sorted(got), ["GLD", "NVDA", "QQQ"])        # PENNY is under $2
+        self.assertEqual([got[s].base for s in ("QQQ", "GLD", "NVDA")], ["NDX", "XAU", "NVDA"])
+        self.assertTrue(got["QQQ"].meta["watchlist"])
+        self.assertNotIn("watchlist", got["NVDA"].meta)
+        self.assertEqual(got["GLD"].meta["today_volume"], 0.0)       # only yesterday's bar so far
+        self.assertEqual(got["QQQ"].meta["expected_volume_frac"], 0.475)
+        # after the close: no stocks, and the reason is logged once
+        with mock.patch("desk.agents.scout.us_eastern", return_value=dt.datetime(2026, 11, 19, 16, 5)):
+            self.assertEqual(Scout(cfg, None, a, self.log, self.tmp / "tok.json").scan(), [])
+        msgs = [e["message"] for e in self.store.q("SELECT message FROM events WHERE stage='scout'")]
+        self.assertIn("US stocks: outside the regular session, scouting crypto only", msgs)
+
+    def test_gold_trades_as_a_spot_token_when_perps_are_off(self):
+        pairs = {"BTCUSDT": "BTC", "XAUTUSDT": "XAUT", "PAXGUSDT": "PAXG"}
+
+        class FakeBn:
+            def spot_info(s): return {x: {"base": b, "step": 0.0001, "min_notional": 5.0} for x, b in pairs.items()}
+            def tickers_24h(s, m):
+                assert m == "spot", "perp data asked for with perps off"
+                return {x: {"symbol": x, "quoteVolume": 2e7, "lastPrice": 3724.0, "highPrice": 3740,
+                            "lowPrice": 3700, "priceChangePercent": 0.2} for x in pairs}
+            def books(s, m, sym=None):
+                assert m == "spot", "perp data asked for with perps off"
+                return {x: (3723.9, 3724.0) for x in pairs}
+            def tokenized_stock_bases(s): return set()
+
+        cfg = copy_cfg(include_spot=True, include_perps=False, stocks_enabled=False, crypto_top_alts=0,
+                       commodities={"XAU": ["gold"], "XAG": ["silver"]},
+                       commodity_spot_tokens={"XAU": ["XAUT", "PAXG"]})
+        got = {c.symbol: c for c in Scout(cfg, FakeBn(), None, self.log, self.tmp / "tok.json").scan()}
+        self.assertEqual(sorted(got), ["BTCUSDT", "XAUTUSDT"])      # one gold token, not both
+        g = got["XAUTUSDT"]
+        self.assertEqual((g.base, g.market, g.meta["asset_class"], g.meta["token"]), ("XAU", "spot", "commodity", "XAUT"))
+        warns = [e["message"] for e in self.store.q("SELECT message FROM events WHERE level='warn'")]
+        self.assertIn("XAG: not scouted 24/7 (perps are off and it has no spot token)", warns)
+
+        class Bn:
+            def avg_daily_quote_volume(s, *a): return 2e7
+            def depth(s, *a): return {"bids": [(3723.0, 100)], "asks": [(3725.0, 100)]}
+
+        class CryptoNews:
+            def risk_for(s, base, venue, lb):
+                s.asked = (base, venue)
+                return []
+
+        class Fh:
+            def market_news_risk(s, names, lb): return []
+
+        cn = CryptoNews()
+        self.assertEqual(len(FilterAgent(CFG, Bn(), None, cn, Fh(), self.log).run([g])), 1)
+        self.assertEqual(cn.asked, ("XAUT", "binance_spot"))          # news about the token itself
+
+
+class LeverageTest(_RulesBase):
+    """Main desk: a quiet instrument gets up to 3x on 5% margin, with every exit two thirds as far."""
+    QUIET = {"_raw_atr_pct": 0.25}        # 1h ATR 0.25% -> 1.5 / 0.25 = 6 -> capped at 3x
+
+    def lev_enter(self, c=None, breakdown=None):
+        c = c or cand()
+        self.px[c.symbol] = (c.bid, c.ask)
+        t = self.ex.propose(Signal(Survivor(c, {"spread_pct": c.spread_pct}), 0.75, breakdown or self.QUIET))
+        a = self.risk.approve(t)
+        if a is None:
+            return t, None
+        self.ex.execute(a)
+        return t, self.store.open_positions()[-1]
+
+    def test_leverage_comes_from_how_much_the_instrument_moves(self):
+        lev = CFG["risk"]["leverage"]
+        self.assertEqual(lev["target_atr_1h_pct"], 1.5)
+        # gold ~0.3-0.5%, BTC ~0.6-0.8%, alts 1%+ an hour
+        self.assertEqual([leverage_for(lev, "spot", a) for a in (0.25, 0.45, 0.5, 0.6, 0.75, 1.0, 2.0)],
+                         [3, 3, 3, 2, 2, 1, 1])
+        self.assertEqual(leverage_for(lev, "stock", 0.3), 3)
+        self.assertEqual(leverage_for(lev, "perp", 0.25), 1)        # perps stay at 1x
+        self.assertEqual([leverage_for(lev, "spot", a) for a in (None, float("nan"), 0)], [1, 1, 1])
+        self.assertEqual(leverage_for({**lev, "max_x": 1}, "spot", 0.25), 1)
+        self.assertEqual(leverage_for({}, "spot", 0.25), 1)
+
+    def test_sizing_margin_and_tighter_stop(self):
+        t, p = self.lev_enter()
+        self.assertEqual(t.leverage, 3)
+        self.assertAlmostEqual(t.notional, 30.0)                      # 5% margin ($10) x 3
+        self.assertEqual((p.leverage, round(p.exit_scale, 4)), (3, 0.6667))
+        self.assertAlmostEqual(p.margin, p.qty * p.entry_price / 3)
+        self.assertAlmostEqual(p.stop_price, p.entry_price * (1 - 0.0533))
+        fee = p.entry_fee
+        self.assertAlmostEqual(self.paper.cash(), 200 - p.margin - fee)   # only the margin left cash
+        self.assertAlmostEqual(self.brokers.total_equity(), 200 - fee)
+        msg = self.store.q("SELECT message FROM events WHERE kind='approved'")[-1]["message"]
+        self.assertIn("$30.00 at 3x (margin $10.00), stop 94.67 (-5.33%), max loss $1.60", msg)
+        self.at(p, 0.95)                                               # -5%: inside the stop
+        self.assertEqual(len(self.store.open_positions()), 1)
+        self.assertAlmostEqual(self.brokers.total_equity(), 200 - fee + p.qty * (p.entry_price * 0.95 - p.entry_price))
+        self.at(p, 0.946)
+        c = self.store.closed_positions()[0]
+        self.assertEqual(c["exit_reason"], "stop -5.33%")
+        normal_max_loss = 200 * 0.10 * 0.08                             # a 10% trade at -8%
+        self.assertLess(-c["pnl"], normal_max_loss * 1.1)               # same risk, plus fees and slippage
+        self.assertAlmostEqual(self.paper.cash(), 200 + c["pnl"])       # margin back, result settled
+
+    def test_trail_starts_and_follows_two_thirds_as_far(self):
+        t, p = self.lev_enter()
+        self.at(p, 1.099)
+        self.assertFalse(self.store.open_positions()[0].trail_active)
+        self.at(p, 1.101)                                               # +10% = 15% x 2/3
+        q = self.store.open_positions()[0]
+        self.assertTrue(q.trail_active)
+        self.assertAlmostEqual(q.stop_price, p.entry_price * 1.101 * (1 - 0.0533))
+        self.at(p, 1.04)
+        c = self.store.closed_positions()[0]
+        self.assertEqual(c["exit_reason"], "trailing stop")
+        self.assertGreater(c["pnl"], 0)
+
+    def test_moderate_mover_gets_2x_with_normal_exits(self):
+        t, p = self.lev_enter(breakdown={"_raw_atr_pct": 0.6})
+        self.assertEqual((t.leverage, p.exit_scale), (2, 1.0))
+        self.assertAlmostEqual(t.notional, 20.0)                       # same size as a normal trade
+        self.assertAlmostEqual(p.stop_price, p.entry_price * (1 - self.cfg["risk"]["stop_loss_pct"] / 100))
+        self.assertAlmostEqual(self.paper.cash(), 200 - p.margin - p.entry_fee)   # same stop, half the cash
+
+    def test_gross_exposure_cap(self):
+        lev = self.cfg["risk"]["leverage"]
+        lev["max_gross_exposure_pct"] = 20.0                           # $40 on a $200 book
+        self.lev_enter()
+        t, p = self.lev_enter(cand(symbol="XAUTUSDT", base="XAU"))
+        self.assertIsNone(p)
+        self.assertEqual(self.kills("risk")[-1]["reason"], "gross exposure $59.91 would pass 20% of equity ($39.99)")
+
+    def test_interest_on_the_borrowed_part(self):
+        t, p = self.lev_enter()
+        borrowed = p.qty * p.entry_price - p.margin
+        self.store.update_position(p.id, last_funding_ts=time.time() - 365 * 86400)
+        cash = self.paper.cash()
+        self.at(p, 1.0)
+        q = self.store.open_positions()[0]
+        self.assertAlmostEqual(q.funding_paid, borrowed * 0.10, places=3)   # 10% a year on spot
+        self.assertAlmostEqual(self.paper.cash(), cash - q.funding_paid)
+        self.at(p, 0.94)
+        c = self.store.closed_positions()[0]
+        gross = (c["exit_price"] - c["entry_price"]) * c["qty"]
+        self.assertAlmostEqual(c["pnl"], gross - c["entry_fee"] - c["exit_fee"] - q.funding_paid, places=4)
+
+    def test_leverage_is_paper_only_and_sealed(self):
+        c = cand()
+        self.px[c.symbol] = (c.bid, c.ask)
+        sig = Signal(Survivor(c, {"spread_pct": c.spread_pct}), 0.75, self.QUIET)
+        t = self.ex.propose(sig)
+        a = self.risk.approve(t)
+        self.assertFalse(self.risk.verify_seal(dataclasses.replace(a, ticket=dataclasses.replace(t, leverage=1))))
+        self.risk.mode = "testnet"
+        self.assertIsNone(self.risk.approve(dataclasses.replace(t, ticket_id="other")))
+        self.assertEqual(self.kills("risk")[-1]["reason"], "leverage is paper-only")
+        self.ex.mode = "testnet"
+        self.assertEqual(self.ex.propose(sig).leverage, 1)
+
+    def test_old_books_load_unlevered(self):
+        path = self.tmp / "old.db"
+        import sqlite3
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE positions (id INTEGER PRIMARY KEY, symbol TEXT, base TEXT, market TEXT, "
+                    "venue TEXT, qty REAL, entry_price REAL, entry_ts REAL, entry_fee REAL, stop_price REAL, "
+                    "initial_stop REAL, peak_price REAL, trail_active INTEGER, last_price REAL, last_ts REAL, "
+                    "funding_paid REAL, last_funding_ts REAL, score REAL, stop_order_id TEXT, status TEXT, "
+                    "exit_price REAL, exit_ts REAL, exit_fee REAL, exit_reason TEXT, pnl REAL)")
+        con.execute("INSERT INTO positions (symbol, base, market, venue, qty, entry_price, last_price, stop_price, "
+                    "initial_stop, peak_price, trail_active, funding_paid, status) "
+                    "VALUES ('SOLUSDT', 'SOL', 'spot', 'binance_spot', 0.268, 74.6, 75.0, 68.6, 68.6, 75, 0, 0, 'open')")
+        con.commit()
+        con.close()
+        p = Store(path).open_positions()[0]
+        self.assertEqual((p.leverage, p.margin, p.exit_scale), (1.0, None, 1.0))
+        self.assertAlmostEqual(p.value, 0.268 * 75.0)
+
+    def test_stocks_flatten_before_the_regular_close(self):
+        class Alpaca:
+            def __init__(s): s.left, s.kinds = 60, []
+            def session_window(s, kind="regular"):
+                s.kinds.append(kind)
+                now = us_eastern()
+                return now - dt.timedelta(hours=2), now + dt.timedelta(minutes=s.left)
+
+        a = Alpaca()
+        self.risk.alpaca = a
+        p = self.held(cand(symbol="QQQ", base="NDX", market="stock"))
+        self.at(p, 1.0)
+        self.assertEqual(len(self.store.open_positions()), 1)
+        a.left = 9                                                     # 9 min to the 16:00 close
+        self.at(p, 1.0)
+        self.assertEqual(self.exit_reason("NDX"), "flatten before the close")
+        self.assertEqual(set(a.kinds), {"regular"})
+
+
+class DaytradeLeverageTest(LeverageTest):
+    """Daytrade desk at 3x: stop -2%, take profit +3% (two thirds of -3% / +4.5%)."""
+    RISK = DAYTRADE
+
+    def test_sizing_margin_and_tighter_stop(self):
+        t, p = self.lev_enter()
+        self.assertAlmostEqual(p.stop_price, p.entry_price * 0.98)
+        msg = self.store.q("SELECT message FROM events WHERE kind='approved'")[-1]["message"]
+        self.assertTrue(msg.endswith("(-2.0%), max loss $0.60, take profit +3%, max hold 8h"), msg)
+        self.at(p, 1.029)
+        self.assertEqual(len(self.store.open_positions()), 1)
+        self.at(p, 1.0301)
+        self.assertEqual(self.exit_reason(), "take profit +3%")
+
+    def test_trail_starts_and_follows_two_thirds_as_far(self):
+        t, p = self.lev_enter()
+        self.at(p, 0.979)
+        self.assertEqual(self.exit_reason(), "stop -2.0%")
+
+    def test_interest_on_the_borrowed_part(self):
+        pass                                                           # same as the main desk
+
+    def test_gross_exposure_cap(self):
+        pass                                                           # same as the main desk
 
 
 if __name__ == "__main__":

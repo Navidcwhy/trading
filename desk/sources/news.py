@@ -27,6 +27,9 @@ CRYPTO_NAMES = {
     "TIA": ["celestia"], "HYPE": ["hyperliquid"], "ONDO": ["ondo"], "TRUMP": ["trump coin", "$trump"],
     "WIF": ["dogwifhat"], "BONK": ["bonk"], "FET": ["fetch.ai", "artificial superintelligence alliance"],
     "RENDER": ["render network"], "XMR": ["monero"], "ATOM": ["cosmos"], "ALGO": ["algorand"],
+    # gold tokens (scouted as gold, not as crypto): trouble at the token itself, not at its issuer's
+    # other business, which would block gold on every Tether or Paxos headline
+    "XAUT": ["tether gold"], "PAXG": ["pax gold", "paxos gold"],
 }
 
 

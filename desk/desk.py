@@ -66,8 +66,11 @@ def apply_machine_overrides(universe: dict) -> list[str]:
         notes.append(f"spot data via {spot.split('//')[-1].rstrip('/')}")
     if perps_off():
         universe["include_perps"] = False
-        universe["commodities"] = {}  # gold/silver are perps on the same venue
-        notes.append("perps and gold/silver off (DESK_PERPS_OFF)")
+        # gold/silver perps are on the same venue; gold can still trade as a token on spot
+        tokens = universe.get("commodity_spot_tokens") or {}
+        universe["commodities"] = {b: n for b, n in (universe.get("commodities") or {}).items() if b in tokens}
+        notes.append("perps off (DESK_PERPS_OFF)" + (f", {'/'.join(universe['commodities'])} via spot token"
+                                                      if universe["commodities"] else ", gold/silver off"))
     return notes
 
 

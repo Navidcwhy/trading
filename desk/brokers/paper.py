@@ -1,5 +1,9 @@
 """Paper broker: fills against live public quotes with fees + slippage, one shared
-cash pool, enforces the same exchange minimums the live venues do."""
+cash pool, enforces the same exchange minimums the live venues do.
+
+Leverage (paper only): a position with leverage L puts up margin = cost / L from cash; the fee is
+on the full order. On exit the margin comes back plus the result. Interest on the borrowed part is
+charged by Risk while the position is open (as funding_paid)."""
 from __future__ import annotations
 
 import uuid
@@ -20,7 +24,7 @@ class Brokers:
 
     def total_equity(self) -> float:
         cash = sum(b.cash() for b in {id(b): b for b in self.mapping.values()}.values())
-        return cash + sum(p.qty * p.last_price for p in self.store.open_positions())
+        return cash + sum(p.value for p in self.store.open_positions())
 
 
 class PaperBroker:
@@ -45,7 +49,7 @@ class PaperBroker:
     def _fee(self, market):
         return self.p["fee_pct"][market] / 100
 
-    def buy(self, c: Candidate, qty: float, max_price: float) -> Fill | None:
+    def buy(self, c: Candidate, qty: float, max_price: float, leverage: float = 1) -> Fill | None:
         bid, ask = self.fresh_quote(c.market, c.symbol)
         if ask <= 0 or ask > max_price:
             return None
@@ -53,14 +57,15 @@ class PaperBroker:
         with self.store.lock:
             cash = self.cash()
             fee_r = self._fee(c.market)
-            if qty * price * (1 + fee_r) > cash:
+            per_unit = price * (1 / leverage + fee_r)    # cash per unit: margin + fee on the full order
+            if qty * per_unit > cash:
                 step = c.meta.get("market_step") or c.meta.get("step") or 0
-                qty = floor_step(cash / (price * (1 + fee_r)), step)
+                qty = floor_step(cash / per_unit, step)
                 if qty * price < (c.meta.get("min_notional") or 0) or qty <= 0:
                     return None
             notional = qty * price
             fee = notional * fee_r
-            self.store.set("paper_cash", cash - notional - fee)
+            self.store.set("paper_cash", cash - notional / leverage - fee)
         return Fill(price=price, qty=qty, fee=fee, order_id="paper-" + uuid.uuid4().hex[:8])
 
     def sell(self, p, quote) -> Fill | None:
@@ -68,9 +73,9 @@ class PaperBroker:
         if bid <= 0:
             return None
         price = bid * (1 - self.p["slippage_pct"] / 100)
-        notional = p.qty * price
-        fee = notional * self._fee(p.market)
-        self.adjust_cash(notional - fee)
+        fee = p.qty * price * self._fee(p.market)
+        # the margin comes back plus the result (without leverage: simply qty * price)
+        self.adjust_cash(p.margin_used + (price - p.entry_price) * p.qty - fee)
         return Fill(price=price, qty=p.qty, fee=fee, order_id="paper-" + uuid.uuid4().hex[:8])
 
     def funding_info(self, symbol):

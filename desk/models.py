@@ -66,6 +66,7 @@ class OrderTicket:  # Executor -> Risk
     qty: float
     ref_price: float      # ask at proposal time
     notional: float
+    leverage: int = 1     # paper only: notional / margin
     ticket_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     @property
@@ -81,6 +82,7 @@ class ApprovedOrder:  # Risk -> Executor
     trail_activate_pct: float
     trail_pct: float
     seal: str
+    exit_scale: float = 1.0   # leverage: every price exit (stop, take profit, trail) times this
 
 
 @dataclass
@@ -113,6 +115,9 @@ class Position:
     score: float
     stop_order_id: str
     status: str = "open"
+    leverage: float = 1.0
+    margin: float | None = None      # cash put up; None = the whole cost (no leverage)
+    exit_scale: float = 1.0
 
     @property
     def notional(self) -> float:
@@ -121,3 +126,12 @@ class Position:
     @property
     def unrealized(self) -> float:
         return (self.last_price - self.entry_price) * self.qty
+
+    @property
+    def margin_used(self) -> float:
+        return self.margin if self.margin is not None else self.qty * self.entry_price
+
+    @property
+    def value(self) -> float:
+        """What the position adds to equity: the cash put up plus the open result."""
+        return self.margin_used + self.unrealized

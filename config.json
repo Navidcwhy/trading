@@ -15,7 +15,10 @@
     "include_perps": true,
     "crypto_exclude": ["USDT", "USDC", "FDUSD", "TUSD", "DAI", "USDP", "BUSD", "USDE", "PYUSD", "USD1", "BFUSD", "RLUSD", "XUSD", "EUR", "EURI", "AEUR", "WBTC", "WBETH", "STETH", "PAXG", "XAUT"],
     "commodities": { "XAU": ["gold", "XAU"], "XAG": ["silver", "XAG"] },
+    "commodity_spot_tokens": { "XAU": ["XAUT", "PAXG"] },
     "stocks_enabled": true,
+    "stocks_session": "regular",
+    "stocks_watchlist": { "QQQ": "NDX", "GLD": "XAU", "SLV": "XAG", "EWD": "SWE" },
     "stocks_most_actives": 20,
     "stocks_top_gainers": 10,
     "stocks_min_price": 2.0
@@ -27,9 +30,9 @@
     "max_quote_age_sec": { "stock": 300 },
     "earnings_kill_days_ahead": 1,
     "max_abs_funding_pct": 0.05,
-    "min_volume_ratio_vs_30d": 1.0,
+    "min_volume_ratio_vs_30d": 0.6,
     "book_band_pct": 1.0,
-    "min_book_depth_usd": { "spot": 100000, "perp": 250000, "stock": 5000 },
+    "min_book_depth_usd": { "spot": 100000, "perp": 250000, "stock": 2000 },
     "news_lookback_hours": { "crypto": 12, "stock": 24, "commodity": 12 },
     "news_risk_keywords": [
       "hack", "hacked", "exploit", "exploited", "drained", "breach", "stolen", "attack",
@@ -104,7 +107,16 @@
     "flatten_stocks_min_before_session_end": 10,
     "no_stock_entries_min_before_session_end": 20,
     "exchange_side_stops": true,
-    "stale_quote_alert_sec": 120
+    "stale_quote_alert_sec": 120,
+    "leverage": {
+      "max_x": 3,
+      "markets": ["spot", "stock"],
+      "target_atr_1h_pct": 1.5,
+      "margin_pct": 5.0,
+      "max_gross_exposure_pct": 150.0,
+      "borrow_apr_pct": { "spot": 10.0, "stock": 8.0 },
+      "margin_call_pct": 20.0
+    }
   },
 
   "paper": {

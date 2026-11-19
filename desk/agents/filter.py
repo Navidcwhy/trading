@@ -3,9 +3,10 @@ for a check can't be fetched, the candidate dies (logged as such).
 
 Checks, cheapest first:
   1 spread too wide or stale quote (stocks)   2 funding overheated (perps)   3 earnings today/tomorrow (stocks)
-  4 volume < 30-day avg    5 thin order book              6 open news risk
-Gold/silver are perps, so they get the perp checks; their news check reads general
-market news (Finnhub) for the metal plus crypto news for the venue (Binance).
+  4 volume too far under the 30-day avg (min_volume_ratio_vs_30d; stocks: against what a normal day
+    has traded by this time of the session)    5 thin order book    6 open news risk
+Gold/silver get the checks of the market they trade on (perp, or spot for a gold token); their news
+check reads general market news (Finnhub) for the metal plus crypto news for the token and the venue.
 Follow-up headlines about a known, handled event (config news_acknowledged) don't block,
 but any other risk word in them still does; each excused headline is logged once.
 """
@@ -115,11 +116,13 @@ class FilterAgent:
             avg = self.bn.avg_daily_quote_volume(c.market, c.symbol, 30)
             ratio = c.volume_24h_usd / avg if avg else 0
         else:
-            avg = self.alpaca.avg_daily_volume(c.symbol, 30)
+            frac = c.meta.get("expected_volume_frac") or 1.0
+            avg = self.alpaca.avg_daily_volume(c.symbol, 30) * frac
             ratio = c.meta.get("today_volume", 0) / avg if avg else 0
         mn = self.f["min_volume_ratio_vs_30d"]
         if ratio < mn:
-            return self._kill(c, f"volume under 30d avg: {ratio:.2f}x < {mn}x", vol_ratio=ratio)
+            when = " for this time of day" if not crypto and c.meta.get("expected_volume_frac", 1) < 1 else ""
+            return self._kill(c, f"volume under 30d avg{when}: {ratio:.2f}x < {mn}x", vol_ratio=ratio)
         chk["vol_ratio"] = ratio
 
         # 5. order book depth
@@ -143,10 +146,10 @@ class FilterAgent:
 
         # 6. open news risk
         if c.meta.get("asset_class") == "commodity":
-            # gold/silver: the metal in general market news (Finnhub) + the venue in crypto news
+            # gold/silver: the metal in general market news (Finnhub) + the token/venue in crypto news
             lb = self.f["news_lookback_hours"].get("commodity", 12)
             metal = self.fh.market_news_risk(c.meta.get("news_names", []), lb) if self.fh else None
-            venue = self.cnews.risk_for(c.base, c.venue, lb)
+            venue = self.cnews.risk_for(c.meta.get("token") or c.base, c.venue, lb)
             hits = None if metal is None or venue is None else metal + venue
         elif crypto:
             hits = self.cnews.risk_for(c.base, c.venue, self.f["news_lookback_hours"]["crypto"])

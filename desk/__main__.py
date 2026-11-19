@@ -42,9 +42,11 @@ def report(cfg, since_h: float | None = None):
         print(f"Cash ${cash:.2f}")
     print(f"\nOPEN POSITIONS ({len(opens)})")
     for p in opens:
+        lev = f"  {p.leverage:g}x margin ${p.margin_used:.2f} ({p.unrealized / p.margin_used * 100:+.1f}% on margin)" \
+            if p.leverage > 1 else ""
         print(f"  {p.market:5} {p.symbol:12} qty {p.qty:<12g} entry {p.entry_price:<10.6g} last {p.last_price:<10.6g}"
               f" {(p.last_price / p.entry_price - 1) * 100:+6.2f}%  stop {p.stop_price:.6g}"
-              f"{' TRAILING' if p.trail_active else ''}  since {_fmt_ts(p.entry_ts)}")
+              f"{' TRAILING' if p.trail_active else ''}  since {_fmt_ts(p.entry_ts)}{lev}")
     closed = st.closed_positions(since)
     wins = [c for c in closed if (c["pnl"] or 0) > 0]
     print(f"\nCLOSED TRADES ({len(closed)}, {len(wins)} winners, P&L ${sum(c['pnl'] or 0 for c in closed):+.4f})")
@@ -104,10 +106,13 @@ def desk_stats(st, t0: float, start_equity: float) -> dict:
     closed = st.closed_positions(t0)
     ent = st.q("SELECT COUNT(*) AS n, COALESCE(SUM(entry_fee), 0) AS fee FROM positions WHERE entry_ts>=?", (t0,))[0]
     hold = [(c["exit_ts"] - c["entry_ts"]) / 3600 for c in closed if c["exit_ts"] and c["entry_ts"]]
+    opens = st.open_positions()
     return {"eq0": eq0, "eq_now": eq_now, "eq_ts": eq_ts,
             "change_pct": (eq_now / eq0 - 1) * 100 if eq0 else 0.0,
-            "open": len(st.open_positions()),
+            "open": len(opens),
             "invested_pct": (1 - cash / eq_now) * 100 if eq_now else 0.0,
+            "exposure_pct": sum(p.notional for p in opens) / eq_now * 100 if eq_now else 0.0,
+            "levered": sum(1 for p in opens if p.leverage > 1),
             "entries": ent["n"], "closed": len(closed),
             "winners": sum(1 for c in closed if (c["pnl"] or 0) > 0),
             "pnl": sum(c["pnl"] or 0 for c in closed),
@@ -147,6 +152,7 @@ def compare(cfg):
             ("Change", lambda d: f"{d['change_pct']:+.2f}%"),
             ("Open positions", lambda d: str(d["open"])),
             ("Invested", lambda d: f"{d['invested_pct']:.0f}%"),
+            ("Exposure", lambda d: f"{d['exposure_pct']:.0f}%" + (f" ({d['levered']} lev.)" if d["levered"] else "")),
             ("Entries", lambda d: str(d["entries"])),
             ("Closed trades", lambda d: str(d["closed"])),
             ("Winners", lambda d: f"{d['winners']}/{d['closed']}" if d["closed"] else "-"),
@@ -160,7 +166,8 @@ def compare(cfg):
     for (name, *_), d in zip(desks, stats):
         print(f"  {name + ':':<12}" + (", ".join(f"{r} x{n}" for r, n in d["exits"].most_common()) or "-"))
     print("\n'Change' is the fair number: equity now against equity when the youngest desk started.\n"
-          "Realised P&L counts trades closed since then, also ones opened before it.")
+          "Realised P&L counts trades closed since then, also ones opened before it.\n"
+          "'Invested' is the cash tied up (margin for leveraged trades), 'Exposure' the market value held.")
 
 
 def main(argv=None):
