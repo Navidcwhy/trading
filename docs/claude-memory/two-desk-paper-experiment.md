@@ -26,4 +26,13 @@ session; if they have stopped, `run_desk.bat` and `run_daytrade.bat` start them 
 (11-10 19:42): main $194.87 (−2.6 %, 9 positions), daytrade $200.05 (1 position, PEPE). Both books
 restart at $200; the one-week comparison restarts from the new start date.
 
+**2026-11-19 changes (the user asked for them):** the user found it strange that so little got through
+the filter and wanted gold, silver, Nasdaq and OMXS30 plus leverage. Volume floor 1.0x -> 0.6x of the
+30-day average (volume was 79 % of all kills, median 0.74x); US stocks in the regular session instead of
+after-hours (the free IEX feed is stale after the close) with a watchlist QQQ/GLD/SLV/EWD; gold 24/7 as a
+spot token (XAUT/PAXG) where perps are off; paper-only leverage 2-3x for instruments that move little,
+with every exit scaled so a leveraged trade never loses more at its stop than a normal 10 % trade. Both
+desks got the same changes and kept their books, so the comparison continues. The user declined adding
+Yahoo Finance to the cloud network (needed for OMXS30): don't propose it again unless the user asks.
+
 Related: [[user-replies-in-swedish]]
