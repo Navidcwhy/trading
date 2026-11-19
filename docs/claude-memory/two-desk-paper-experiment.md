@@ -35,4 +35,10 @@ with every exit scaled so a leveraged trade never loses more at its stop than a 
 desks got the same changes and kept their books, so the comparison continues. The user declined adding
 Yahoo Finance to the cloud network (needed for OMXS30): don't propose it again unless the user asks.
 
+**2026-11-19 14:09 CET:** the decrypt headline "Binance Wins $6.5B Freezing Order Over Hack ..." matched
+venue "Binance" + "hack" and blocked every Binance entry on both desks (0/18 through the filter) for what
+would have been 12 h. The acknowledged Binance-hack entry had expired on 16 Nov and only knew $6.3B. It was
+extended to 26 Nov and taught $6.5B and "freezing order"; new trouble (frozen withdrawals, a new hack,
+fraud) still blocks. Done under the user's same-day ask to review why so little gets through.
+
 Related: [[user-replies-in-swedish]]

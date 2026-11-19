@@ -327,6 +327,12 @@ class DeskTest(_Base):
         self.assertEqual(kw(follow_ups), [])
         # naming "the Binance hack" is enough, the amount isn't needed
         self.assertEqual(kw(["Binance Hack Launderers Mint Elon Musk and Animal Meme Coins to Move Stolen Crypto"]), [])
+        # the court follow-up of 19 Nov, which puts the hack at $6.5B
+        self.assertEqual(kw(["Binance Wins $6.5B Freezing Order Over Hack That Can Be Served via the Blockchain",
+                             "$6.5B Binance hack: court freezes stolen funds"]), [])
+        self.assertEqual(kw(["Binance freezes withdrawals after hack"]), ["freezes withdrawals"])
+        self.assertEqual(kw(["Binance suspends withdrawals despite freezing order over hack"]), ["suspends"])
+        self.assertEqual(kw(["Court issues freezing order against Binance in fraud case"]), ["fraud"])
         # new trouble still blocks, also when the old hack is in the same headline
         self.assertEqual(kw(["Binance suspends withdrawals after $6.3B hack"]), ["suspends"])
         self.assertEqual(kw(["Binance pauses withdrawals again, weeks after $6.3 billion hack"]),
@@ -337,6 +343,7 @@ class DeskTest(_Base):
         self.assertEqual(kw(["New $400M Binance hack hits hot wallet"]), ["hack"])
         self.assertEqual(kw(["Binance hacked again, weeks after $6.3B hack"]), ["hacked"])
         self.assertEqual(kw(["Bitcoin ETFs log $6.3B outflows as SEC probe widens"]), ["probe"])  # not the hack
+        self.assertEqual(kw(["Bitcoin ETFs log $6.5B outflows as SEC probe widens"]), ["probe"])
         self.assertEqual(kw(follow_ups[:1], until=dt.date.today() - day), ["hack"])             # expired
 
         # through the Filter: the candidate passes, each excused headline is logged once

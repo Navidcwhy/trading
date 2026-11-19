@@ -53,9 +53,9 @@
     "venue_news_names": { "binance": ["Binance"], "alpaca": ["Alpaca"] },
     "news_acknowledged": [
       {
-        "note": "Binance hack 2026-10-29 ($6.3B): withdrawals resumed, losses covered",
-        "until": "2026-11-16",
-        "match_all": ["(?<![\\d.,])\\$?6[.,]3\\s*(?:b|bn|billion)\\b|\\bbinance(?:['’]s)?\\s+(?:hack|hackers?|heist)\\b|\\b(?:hack|heist)\\s+(?:of|on)\\s+binance\\b",
+        "note": "Binance hack 2026-10-29 ($6.3B, later put at $6.5B): withdrawals resumed, losses covered. Extended 2026-11-19: court follow-ups (freezing order over the stolen funds) were blocking every Binance entry",
+        "until": "2026-11-26",
+        "match_all": ["(?<![\\d.,])\\$?6[.,][35]\\s*(?:b|bn|billion)\\b|\\bbinance(?:['’]s)?\\s+(?:hack|hackers?|heist)\\b|\\b(?:hack|heist)\\s+(?:of|on)\\s+binance\\b|\\bfreez(?:e|es|ing)\\s+orders?\\b",
                       "\\b(?:binance|hack\\w*|heist|exploit\\w*|stolen|theft|loot\\w*)\\b"],
         "unless": ["\\b(?:another|new|second|third|fresh|renewed|separate)\\b(?:\\W+\\w+){0,2}?\\W+(?:hack|exploit|attack|breach|heist|theft|incident)\\b",
                    "\\b(?:hacked|exploited|breached|drained|attacked|hit)\\s+again\\b"],
