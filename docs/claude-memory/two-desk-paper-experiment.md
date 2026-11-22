@@ -41,4 +41,22 @@ would have been 12 h. The acknowledged Binance-hack entry had expired on 16 Nov 
 extended to 26 Nov and taught $6.5B and "freezing order"; new trouble (frozen withdrawals, a new hack,
 fraud) still blocks. Done under the user's same-day ask to review why so little gets through.
 
+**2026-11-22 changes (the user approved them, "1 nej, 2 ja, 3 ja"):**
+- **3x ETFs:** no change. SOXS gave +17 % on the main desk on 20 Nov.
+- **Stock news filter:** Finnhub files other companies' articles under a ticker, so the Anthropic IPO
+  and a Nebius downgrade blocked NVDA, QQQ and INTC. A stock article now counts only when its headline
+  names the company: its ticker, its name from the Alpaca listing, or `stock_news_aliases` (SPCX ->
+  SpaceX). The words in `news_headline_only_keywords` (offering, dilution, downgrade, ban) count only in
+  the headline. If the name can't be looked up, every article counts as before. Replayed on the
+  19-21 Nov articles, blocking articles went from 76 to 22, and every genuine one still blocks (Nvidia
+  probes, AMD short report, CoreWeave ban, SpaceX dilution). Skipped headlines are logged once as
+  `news_other`.
+- **Slots kept for stocks:** `risk.reserve_slots_for_stocks` = 3 lets crypto and gold tokens hold at
+  most 7 of the 10 slots, so 24/7 crypto can't fill every slot before the US open. The trade-off the
+  user accepted is about 30 % cash on nights and weekends.
+- **Restart at 13:27 CET:** both desks restarted with books kept. Each sold its 3 weakest crypto
+  positions as "slot reserve": main sold DOGE, SOL and ADA for +$0.84; daytrade sold XRP, DOGE and ZEC
+  for −$0.79.
+- **Comparison:** note these sells and the rule change when comparing the desks (around 25 Nov).
+
 Related: [[user-replies-in-swedish]]

@@ -1,2 +1,2 @@
 - [Reply in Swedish](user-replies-in-swedish.md) — user wants Swedish, plain-language answers that stand on their own
-- [Two-desk paper experiment](two-desk-paper-experiment.md) — main vs daytrade desk since 2026-11-10, compare around 2026-11-17, paper only
+- [Two-desk paper experiment](two-desk-paper-experiment.md) — main vs daytrade desk, books restarted 2026-11-18, compare around 2026-11-25, rule changes 19 and 22 Nov, paper only
