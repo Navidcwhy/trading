@@ -45,6 +45,9 @@
       "offering", "dilution", "downgrade", "downgraded", "guidance cut", "restatement", "short report",
       "fda", "recall", "unlock", "token unlock", "liquidation"
     ],
+    "news_headline_only_keywords": ["offering", "dilution", "downgrade", "downgraded", "ban", "banned"],
+    "stock_news_aliases": { "SPCX": ["SpaceX"], "GOOGL": ["Google"], "GOOG": ["Google"], "META": ["Facebook"],
+                            "TSM": ["TSMC"], "SMCI": ["Supermicro"] },
     "crypto_news_feeds": [
       "https://cointelegraph.com/rss",
       "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -102,6 +105,7 @@
     "trail_pct": 8.0,
     "max_open_positions": 10,
     "one_position_per_asset": true,
+    "reserve_slots_for_stocks": 3,
     "max_daily_drawdown_pct": 5.0,
     "halt_below_equity_usd": 160.0,
     "flatten_stocks_min_before_session_end": 10,

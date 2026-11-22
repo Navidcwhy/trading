@@ -21,6 +21,11 @@ Optional rules, off unless set in the risk section (used by the daytrade desk):
   * max_hold_hours: sell after that long, whatever the price
   * reentry_cooldown_min: no new entry in an asset for that long after selling it
 
+Slots kept for stocks (risk.reserve_slots_for_stocks, e.g. 3 of max_open_positions 10): positions
+outside US stocks (crypto, gold tokens and perps) may fill at most the other slots, so 24/7 crypto
+can't take every slot before the US session opens. Holdings above that cap (from before it was
+set) are sold, weakest first.
+
 Circuit breakers: STOP file (no new entries), FLATTEN file (close everything),
 daily drawdown limit, equity floor, max open positions, one position per asset.
 STOP / FLATTEN hit every desk; STOP.<desk> / FLATTEN.<desk> (e.g. STOP.daytrade) only one.
@@ -54,6 +59,9 @@ def rules_summary(r: dict) -> str:
     cd = on("reentry_cooldown_min")
     if cd:
         parts.append(f"re-entry cooldown {cd:g} min")
+    keep = on("reserve_slots_for_stocks")
+    if keep:
+        parts.append(f"crypto max {max(0, r['max_open_positions'] - keep)} of {r['max_open_positions']} slots")
     return ", ".join(parts)
 
 
@@ -80,6 +88,11 @@ class Risk:
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
                                   or not (0 <= v < float("inf"))):
                 raise ValueError(f"risk.{k} must be a number >= 0 (0 or absent = off), got {v!r}")
+        keep = self.r.get("reserve_slots_for_stocks")
+        if keep is not None and (isinstance(keep, bool) or not isinstance(keep, int)
+                                 or not 0 <= keep <= self.r["max_open_positions"]):
+            raise ValueError(f"risk.reserve_slots_for_stocks must be a whole number from 0 to "
+                             f"max_open_positions ({self.r['max_open_positions']}), got {keep!r}")
 
     def _opt(self, key: str):
         """An optional rule's value, or None when it is off (absent or 0)."""
@@ -88,6 +101,12 @@ class Risk:
 
     def rules_summary(self) -> str:
         return rules_summary(self.r)
+
+    def crypto_cap(self) -> int | None:
+        """Most positions outside US stocks the desk may hold: max_open_positions minus
+        reserve_slots_for_stocks. None when no slots are kept for stocks."""
+        keep = self.r.get("reserve_slots_for_stocks")
+        return max(0, self.r["max_open_positions"] - keep) if keep else None
 
     # ------------------------------------------------------------ seal
     def _seal(self, t: OrderTicket, stop: float) -> str:
@@ -148,6 +167,12 @@ class Risk:
         open_pos = self.store.open_positions()
         if len(open_pos) >= self.r["max_open_positions"]:
             return self._kill(c, f"max open positions ({self.r['max_open_positions']}) reached")
+        cap = self.crypto_cap()
+        if cap is not None and c.market != "stock":
+            held = sum(1 for p in open_pos if p.market != "stock")
+            if held >= cap:
+                return self._kill(c, f"crypto slots full: {held}/{cap} ({self.r['reserve_slots_for_stocks']} of "
+                                     f"{self.r['max_open_positions']} slots kept for stocks)")
         if any(p.symbol == c.symbol and p.market == c.market for p in open_pos):
             return self._kill(c, "already holding this instrument")
         if self.r.get("one_position_per_asset", True):
@@ -325,6 +350,22 @@ class Risk:
                 reason = f"time exit {max_h:g}h"
             if reason:
                 self.exit(p, reason, q)
+        self._trim_to_crypto_cap(quotes)
+
+    def _trim_to_crypto_cap(self, quotes: dict):
+        """Sells positions outside US stocks above crypto_cap (held from before slots were kept for
+        stocks), weakest first, so the kept slots are free when the US session opens."""
+        cap = self.crypto_cap()
+        if cap is None:
+            return
+        held = [p for p in self.store.open_positions() if p.market != "stock"]
+        if len(held) <= cap:
+            return
+        weakest = sorted(held, key=lambda p: p.last_price / p.entry_price if p.entry_price else 0)
+        for p in weakest[:len(held) - cap]:
+            q = quotes.get(p.symbol)
+            if q and q[0] > 0:
+                self.exit(p, f"slot reserve: crypto max {cap}", q)
 
     def _funding(self, p):
         """Paper only: charge/credit perp funding when a funding timestamp passes."""

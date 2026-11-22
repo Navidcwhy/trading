@@ -86,7 +86,8 @@ class Desk:
         self.news_acks = NewsAck(f.get("news_acknowledged"))
         self.cnews = CryptoNews(f["crypto_news_feeds"], f["news_risk_keywords"], f.get("venue_news_names", {}),
                                 self.news_acks)
-        self.finnhub = Finnhub(env("FINNHUB_API_KEY"), f["news_risk_keywords"], self.news_acks)
+        self.finnhub = Finnhub(env("FINNHUB_API_KEY"), f["news_risk_keywords"], self.news_acks,
+                               f.get("news_headline_only_keywords", ()))
         ak, asec = env("ALPACA_KEY_ID"), env("ALPACA_SECRET_KEY")
         trading_base = cfg["venues"]["alpaca_trading"]["live" if self.mode == "live" else "testnet"]
         self.alpaca = AlpacaData(ak, asec, trading_base) if ak and asec else None

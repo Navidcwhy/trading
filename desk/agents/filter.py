@@ -9,12 +9,17 @@ Gold/silver get the checks of the market they trade on (perp, or spot for a gold
 check reads general market news (Finnhub) for the metal plus crypto news for the token and the venue.
 Follow-up headlines about a known, handled event (config news_acknowledged) don't block,
 but any other risk word in them still does; each excused headline is logged once.
+Stock news only blocks when the headline names the company (ticker, its name from Alpaca, or
+config stock_news_aliases): Finnhub files a peer's downgrade or someone else's IPO under the
+ticker too. Each such skipped headline is logged once. If the name can't be looked up, every
+article counts, as before.
 """
 from __future__ import annotations
 
 import datetime as dt
 
 from ..models import Candidate, Survivor
+from ..sources.news import company_names
 from ..util import us_eastern
 
 
@@ -49,6 +54,9 @@ class FilterAgent:
             words = "/".join(a["ignored"])
             self.log.event("filter", "news_ack", f"not blocking on '{words}', known event ({a['note']}): "
                            f"\"{a['title'][:110]}\"")
+        for o in getattr(self.fh, "take_other", list)():
+            self.log.event("filter", "news_other", f"not blocking {o['symbol']} on '{o['keyword']}', the "
+                           f"headline is about another company: \"{o['title'][:110]}\"")
         self.log.event("filter", "summary", f"{len(out)}/{len(cands)} survived: "
                        + ", ".join(s.candidate.key for s in out))
         return out
@@ -56,6 +64,18 @@ class FilterAgent:
     def _kill(self, c: Candidate, reason: str, **detail):
         self.log.kill("filter", c.symbol, c.market, reason, **detail)
         return None
+
+    def _stock_names(self, symbol: str) -> list[str] | None:
+        """What a headline must name to be about this stock, besides its ticker: the company's
+        names from its Alpaca listing plus config stock_news_aliases. None when Alpaca can't tell:
+        then every article filed under the ticker counts, as before (more blocks, never fewer)."""
+        try:
+            names = company_names(self.alpaca.asset_name(symbol)) if self.alpaca else []
+        except Exception:  # noqa: BLE001 - the name only narrows the news check, never skips it
+            return None
+        if not names:
+            return None
+        return names + list((self.f.get("stock_news_aliases") or {}).get(symbol, []))
 
     def _unavailable(self, c, what):
         if self.f.get("fail_closed", True):
@@ -154,7 +174,7 @@ class FilterAgent:
         elif crypto:
             hits = self.cnews.risk_for(c.base, c.venue, self.f["news_lookback_hours"]["crypto"])
         else:
-            hits = self.fh.news_risk(c.symbol, self.f["news_lookback_hours"]["stock"])
+            hits = self.fh.news_risk(c.symbol, self.f["news_lookback_hours"]["stock"], self._stock_names(c.symbol))
         if hits is None:
             if self._unavailable(c, "news feed") is None:
                 return None

@@ -17,6 +17,7 @@ class AlpacaData:
         self.feed = feed
         self._cal: tuple[str, dict | None] | None = None
         self._daily: dict[str, tuple[float, float]] = {}
+        self._names: dict[str, tuple[float, str | None]] = {}
 
     def _get(self, url, params=None):
         return http_json(url, params, headers=self.h, timeout=20)
@@ -54,6 +55,17 @@ class AlpacaData:
         return self.session_window("after_hours")
 
     # ------------------------------------------------------------ universe
+    def asset_name(self, symbol: str) -> str | None:
+        """The name Alpaca lists for a US ticker ('NVIDIA Corporation Common Stock'), kept for a day;
+        None when it lists none. Raises HttpError when Alpaca can't be reached."""
+        hit = self._names.get(symbol)
+        if hit and time.time() - hit[0] < 86400:
+            return hit[1]
+        d = self._get(f"{self.trading_base}/v2/assets/{symbol}") or {}
+        name = d.get("name") if isinstance(d, dict) else None
+        self._names[symbol] = (time.time(), name or None)
+        return name or None
+
     def most_actives(self, top: int) -> list[str]:
         d = self._get(f"{DATA}/v1beta1/screener/stocks/most-actives", {"by": "volume", "top": top})
         return [r["symbol"] for r in d.get("most_actives", [])]

@@ -3,6 +3,8 @@
 Crypto: public RSS headlines (no key).  Stocks: Finnhub (free key, FINNHUB_API_KEY).
 Gold/silver: Finnhub general market news, matched on the metal's names.
 Known events the user has marked as handled (config news_acknowledged) are excused, see NewsAck.
+Finnhub files articles about other companies under a ticker too (an IPO next door, a peer's
+downgrade), so a stock article only counts when its headline names the company, see company_names.
 All lookups return None when the source is unavailable, so the Filter can fail closed.
 """
 from __future__ import annotations
@@ -36,6 +38,63 @@ CRYPTO_NAMES = {
 def keyword_regex(words: list[str]) -> re.Pattern:
     alts = sorted((re.escape(w) for w in words), key=len, reverse=True)
     return re.compile(r"\b(" + "|".join(alts) + r")\b", re.IGNORECASE)
+
+
+# first words too common to stand for a company on their own ("Advanced" Micro Devices,
+# "Space" Exploration Technologies) and fund sponsors (a "Direxion" headline is not about every Direxion fund)
+GENERIC_FIRST_WORDS = {
+    "advanced", "american", "applied", "united", "general", "first", "global", "international", "national",
+    "new", "state", "the", "space", "super", "digital", "energy", "health", "financial", "capital",
+    "technology", "technologies", "systems", "data", "power", "bank", "royal", "standard", "strategy",
+    "rocket", "life", "smart", "real", "open", "micro", "quantum", "nuclear", "solar", "clean", "green",
+    "gold", "silver", "core", "prime", "alpha", "union", "liberty", "select", "daily", "north", "south",
+    "east", "west", "pacific", "great", "world", "universal", "ultra", "china", "direxion", "proshares",
+    "ishares", "spdr", "invesco", "vanguard", "schwab", "fidelity", "wisdomtree", "vaneck", "tradr",
+    "defiance", "roundhill", "graniteshares",
+}
+_SHARE_CLASS = re.compile(r"\s+(?:class\s+[a-z]\b|common\s+stock|ordinary\s+shares|american\s+depositary|"
+                          r"depositary\s+shares|series\s+\d|units?\b|warrants?\b|rights?\b).*$", re.IGNORECASE)
+_CORP_SUFFIX = re.compile(r"[\s,]+(?:inc|incorporated|corp|corporation|co|company|ltd|limited|plc|n\.?v|s\.?a|"
+                          r"ag|se|holdings?|group|pbc|llc|l\.?p|trust|etf|etn|fund|shares)\.?$", re.IGNORECASE)
+_FUND = re.compile(r"\b(?:etf|etn|trust|fund)\b", re.IGNORECASE)
+
+
+def company_names(full_name: str | None) -> list[str]:
+    """The names headlines use for a listed company or fund, from its listed name:
+    'NVIDIA Corporation Common Stock' -> ['NVIDIA'], 'Palo Alto Networks, Inc.' -> ['Palo Alto Networks',
+    'Palo'], 'Advanced Micro Devices, Inc.' -> ['Advanced Micro Devices', 'Advanced Micro'],
+    'Invesco QQQ Trust, Series 1' -> ['Invesco QQQ']. Empty when there is nothing usable."""
+    if not full_name:
+        return []
+    fund = bool(_FUND.search(full_name)) and not re.search(r"common\s+stock", full_name, re.IGNORECASE)
+    n = _SHARE_CLASS.sub("", full_name.split(",")[0].strip()).strip()
+    while True:
+        cut = _CORP_SUFFIX.sub("", n).strip()
+        if cut == n:
+            break
+        n = cut
+    n = re.sub(r"\.com$", "", n, flags=re.IGNORECASE).strip()
+    if len(n) < 3:
+        return []
+    names, words = [n], n.split()
+    if not fund and len(words) >= 2:
+        if len(words[0]) >= 4 and words[0].lower() not in GENERIC_FIRST_WORDS:
+            names.append(words[0])
+        elif len(words) >= 3:
+            names.append(" ".join(words[:2]))
+    return names
+
+
+def about_regex(symbol: str, names: list[str]) -> re.Pattern:
+    """Matches a headline that names the stock: its ticker as written (NVDA, $NVDA, NASDAQ:NVDA,
+    case-sensitive, two letters or more) or one of its names in any case."""
+    parts = []
+    if len(symbol) >= 2:
+        parts.append(rf"(?-i:(?<![\w.$])\$?{re.escape(symbol)}\b)")
+    alts = sorted({re.escape(n) for n in names if n}, key=len, reverse=True)
+    if alts:
+        parts.append(r"\b(?:" + "|".join(alts) + r")\b")
+    return re.compile("|".join(parts) or r"(?!x)x", re.IGNORECASE)
 
 
 class NewsAck:
@@ -148,14 +207,36 @@ class CryptoNews:
 
 
 class Finnhub:
+    """Finnhub articles have a headline and a summary. Risk words count in either, except the
+    `headline_only` ones (config news_headline_only_keywords): words like 'offering' or 'downgrade'
+    turn up in ordinary summaries ("offering an entry point", a peer's downgrade), so they only count
+    in the headline itself."""
     BASE = "https://finnhub.io/api/v1"
 
-    def __init__(self, key: str | None, risk_words: list[str], acks: NewsAck | None = None):
+    def __init__(self, key: str | None, risk_words: list[str], acks: NewsAck | None = None,
+                 headline_only: list[str] | tuple = ()):
         self.key = key
         self.risk_re = keyword_regex(risk_words)
+        only = {w.lower() for w in headline_only}
+        body = [w for w in risk_words if w.lower() not in only]
+        self.body_re = keyword_regex(body) if body else None
         self.acks = acks or NewsAck()
         self._earn: tuple[float, str, dict] | None = None
         self._market: tuple[float, list] | None = None
+        self._other: list[dict] = []
+        self._other_seen: set[tuple[str, str]] = set()
+
+    def _risk_word(self, headline: str, summary: str) -> str | None:
+        """The first risk word that counts: any in the headline, the others in the summary too."""
+        kw = self.acks.keyword(headline, self.risk_re, headline)
+        if kw or not self.body_re or not summary:
+            return kw
+        return self.acks.keyword(f"{headline} {summary}", self.body_re, headline)
+
+    def take_other(self) -> list[dict]:
+        """Risk articles skipped since the last call because their headline is about another company."""
+        out, self._other = self._other, []
+        return out
 
     @property
     def available(self) -> bool:
@@ -181,7 +262,10 @@ class Finnhub:
         self._earn = (time.time(), k, out)
         return out
 
-    def news_risk(self, symbol: str, lookback_h: float) -> list[dict] | None:
+    def news_risk(self, symbol: str, lookback_h: float, names: list[str] | None = None) -> list[dict] | None:
+        """Risk articles about `symbol`. With `names` (the company's names, see company_names) an
+        article only counts when its headline names the company or its ticker; without them every
+        article Finnhub files under the ticker counts."""
         if not self.key:
             return None
         today = dt.date.today()
@@ -190,15 +274,22 @@ class Finnhub:
                                                "to": str(today)})
         except HttpError:
             return None
+        about = about_regex(symbol, names) if names else None
         cutoff = time.time() - lookback_h * 3600
         hits = []
         for r in rows or []:
             if (r.get("datetime") or 0) < cutoff:
                 continue
-            text = f"{r.get('headline', '')} {r.get('summary', '')}"
-            kw = self.acks.keyword(text, self.risk_re, r.get("headline", ""))
+            headline, summary = r.get("headline") or "", r.get("summary") or ""
+            if about and not about.search(headline):
+                m = self.risk_re.search(f"{headline} {summary}")
+                if m and (symbol, headline) not in self._other_seen:
+                    self._other_seen.add((symbol, headline))
+                    self._other.append({"symbol": symbol, "keyword": m.group(1).lower(), "title": headline[:160]})
+                continue
+            kw = self._risk_word(headline, summary)
             if kw:
-                hits.append({"title": r.get("headline", "")[:160], "keyword": kw,
+                hits.append({"title": headline[:160], "keyword": kw,
                              "source": r.get("source"), "age_h": round((time.time() - r["datetime"]) / 3600, 1)})
         return hits
 
@@ -221,10 +312,10 @@ class Finnhub:
         for r in self._market[1]:
             if (r.get("datetime") or 0) < cutoff:
                 continue
-            text = f"{r.get('headline', '')} {r.get('summary', '')}"
-            if not name_re.search(text):
+            headline, summary = r.get("headline") or "", r.get("summary") or ""
+            if not name_re.search(f"{headline} {summary}"):
                 continue
-            kw = self.acks.keyword(text, self.risk_re, r.get("headline", ""))
+            kw = self._risk_word(headline, summary)
             if kw:
                 hits.append({"title": r.get("headline", "")[:160], "keyword": kw,
                              "source": r.get("source"), "scope": "asset",

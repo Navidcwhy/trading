@@ -21,9 +21,9 @@ from desk.desk import InstanceLock, apply_machine_overrides
 from desk.sources.binance import BinanceData
 from desk.__main__ import desk_stats, split_profile
 from desk.models import Candidate, Signal, Survivor
-from desk.sources.news import CryptoNews, Finnhub, NewsAck
+from desk.sources.news import CryptoNews, Finnhub, NewsAck, company_names
 from desk.store import Store
-from desk.util import age_sec, expected_volume_fraction, us_eastern
+from desk.util import HttpError, age_sec, expected_volume_fraction, us_eastern
 
 CFG = Config(json.loads((ROOT / "config.json").read_text(encoding="utf-8")))
 
@@ -396,8 +396,9 @@ class DeskTest(_Base):
 
 
 DAYTRADE = {"stop_loss_pct": 3.0, "take_profit_pct": 4.5, "max_hold_hours": 8, "reentry_cooldown_min": 120}
-MAIN_RULES = "stop -8%, trail 8% after +15%"
-DAYTRADE_RULES = "stop -3%, take profit +4.5%, max hold 8h, re-entry cooldown 120 min"
+MAIN_RULES = "stop -8%, trail 8% after +15%, crypto max 7 of 10 slots"
+DAYTRADE_RULES = ("stop -3%, take profit +4.5%, max hold 8h, re-entry cooldown 120 min, "
+                  "crypto max 7 of 10 slots")
 
 
 class _RulesBase(_Base):
@@ -631,7 +632,7 @@ class CliHelpersTest(unittest.TestCase):
 
     def test_rules_summary_keeps_the_trail_when_take_profit_is_above_it(self):
         self.assertEqual(rules_summary({**CFG["risk"], "take_profit_pct": 25}),
-                         "stop -8%, take profit +25%, trail 8% after +15%")
+                         "stop -8%, take profit +25%, trail 8% after +15%, crypto max 7 of 10 slots")
 
     def test_desk_stats_counts_from_the_given_moment(self):
         st = Store(Path(tempfile.mkdtemp()) / "s.db")
@@ -758,7 +759,7 @@ class MarketsTest(_Base):
 
         class Fh:
             def earnings_dates(s, a, b): return {}
-            def news_risk(s, sym, lb): return []
+            def news_risk(s, sym, lb, names=None): return []
 
         stock = lambda vol, frac: cand(symbol="QQQ", base="NDX", market="stock", bid=100.0, ask=100.02,
                                        quote_age_sec=5, bid_size=300, ask_size=300, today_volume=vol,
@@ -1013,6 +1014,157 @@ class DaytradeLeverageTest(LeverageTest):
 
     def test_gross_exposure_cap(self):
         pass                                                           # same as the main desk
+
+
+class StockNewsRelevanceTest(_Base):
+    """Stock news only blocks when the headline names the company. Real Finnhub articles from
+    19-21 Nov 2026: a peer's downgrade and the Anthropic IPO were blocking NVDA, QQQ and INTC."""
+    NOW = time.time()
+
+    def finnhub(self, rows):
+        f = Finnhub("test-key", CFG["filter"]["news_risk_keywords"],
+                    headline_only=CFG["filter"]["news_headline_only_keywords"])
+
+        def get(path, params):
+            if path == "/calendar/earnings":
+                return {"earningsCalendar": []}
+            return [{"headline": h, "summary": s, "datetime": self.NOW - 3600, "source": "x"} for h, s in rows]
+        f._get = get
+        return f
+
+    def test_company_names_from_the_listing(self):
+        cases = {
+            "NVIDIA Corporation Common Stock": ["NVIDIA"],
+            "Advanced Micro Devices, Inc. Common Stock": ["Advanced Micro Devices", "Advanced Micro"],
+            "CoreWeave, Inc. Class A Common Stock": ["CoreWeave"],
+            "Invesco QQQ Trust, Series 1": ["Invesco QQQ"],
+            "Space Exploration Technologies Corp. Class A Common Stock": ["Space Exploration Technologies",
+                                                                          "Space Exploration"],
+            "Palo Alto Networks, Inc. Common Stock": ["Palo Alto Networks", "Palo"],
+            "Amazon.com, Inc. Common Stock": ["Amazon"],
+            "Nebius Group N.V. Class A Ordinary Shares": ["Nebius"],
+            "Direxion Daily Semiconductor Bear 3X ETF": ["Direxion Daily Semiconductor Bear 3X"],
+            None: [], "": [],
+        }
+        for full, names in cases.items():
+            self.assertEqual(company_names(full), names, full)
+
+    def test_only_headlines_naming_the_company_count(self):
+        f = self.finnhub([
+            ("Nebius: Neocloud Bubble Burst Is Already Happening (Rating Downgrade)", ""),
+            ("Premarket movers: Palo Alto soars, chip stocks rally ahead of Anthropic debut",
+             "Equity futures jumped after Anthropic's initial public offering priced above expectations."),
+            ("Nvidia stock extends $2.5 trillion rout as SEC probe reportedly investigates its accounting", ""),
+            ("Nvidia Sinks 7% on New Probes as California AG Says Scandal Raises Bright Red Flags",
+             "Nvidia shares fell 7% after California's attorney general subpoenaed the company and "
+             "lawmakers opened a probe."),
+        ])
+        hits = f.news_risk("NVDA", 24, ["NVIDIA"])
+        self.assertEqual([h["keyword"] for h in hits], ["probe", "probe"])
+        other = f.take_other()
+        self.assertEqual([(o["symbol"], o["keyword"]) for o in other], [("NVDA", "downgrade"), ("NVDA", "offering")])
+        f.news_risk("NVDA", 24, ["NVIDIA"])
+        self.assertEqual(f.take_other(), [])                     # each skipped headline is reported once
+        # without the company's names every article filed under the ticker counts, as before
+        # (the IPO one still doesn't: 'offering' only counts in a headline)
+        self.assertEqual([h["keyword"] for h in f.news_risk("NVDA", 24)], ["downgrade", "probe", "probe"])
+
+    def test_everyday_words_count_in_the_headline_only(self):
+        f = self.finnhub([
+            ("Intel's Turnaround Story Remains Firmly Intact, Buy The Panic",
+             "Its forward P/E below 40x is offering an accumulation opportunity."),
+            ("Not AMD. Not Intel. This Is the Chip Stock Wall Street Is Underestimating",
+             "Broadcom's AI business is growing, but a fresh downgrade has investors focused on one risk."),
+        ])
+        self.assertEqual(f.news_risk("INTC", 24, ["Intel"]), [])
+        f = self.finnhub([("Why Is CoreWeave (CRWV) Facing New Supply Chain Risk From A US Ban?", ""),
+                          ("Intel Prices $2 Billion Public Offering of Common Stock", "")])
+        self.assertEqual([h["keyword"] for h in f.news_risk("CRWV", 24, ["CoreWeave"])], ["ban"])
+        self.assertEqual([h["keyword"] for h in f.news_risk("INTC", 24, ["Intel"])], ["offering"])
+
+    def filter_run(self, alpaca, rows, symbol="NVDA"):
+        stock = cand(symbol=symbol, base=symbol, market="stock", bid=100.0, ask=100.02, quote_age_sec=5,
+                     bid_size=300, ask_size=300, today_volume=900, expected_volume_frac=1.0)
+        return FilterAgent(CFG, None, alpaca, None, self.finnhub(rows), self.log).run([stock])
+
+    def test_filter_uses_the_listing_name_and_aliases(self):
+        class Alpaca:
+            names = {"NVDA": "NVIDIA Corporation Common Stock",
+                     "SPCX": "Space Exploration Technologies Corp. Class A Common Stock"}
+            def avg_daily_volume(s, sym, days): return 1000.0
+            def asset_name(s, sym): return s.names[sym]
+
+        peer = ("Nebius: I Was Wrong, Growth Financing In Danger (Rating Downgrade)", "I downgrade NBIS stock.")
+        self.assertEqual(len(self.filter_run(Alpaca(), [peer])), 1)
+        logged = self.store.q("SELECT message FROM events WHERE kind='news_other'")
+        self.assertEqual(len(logged), 1)
+        self.assertIn("not blocking NVDA on 'downgrade'", logged[0]["message"])
+        own = ("After Its Worst Week in 18 Years, Nvidia Now Faces an SEC Investigation", "")
+        self.assertEqual(self.filter_run(Alpaca(), [peer, own]), [])
+        self.assertIn("'investigation'", self.kills("filter")[-1]["reason"])
+        # SpaceX is listed as Space Exploration Technologies: config stock_news_aliases names it
+        merger = ("Gary Black Warns SpaceX-Tesla Merger Could Wipe Out 24% Premium in Weeks: "
+                  "'Massive Dilution' Could Crush Shares", "")
+        self.assertEqual(self.filter_run(Alpaca(), [merger], "SPCX"), [])
+        self.assertIn("'dilution'", self.kills("filter")[-1]["reason"])
+
+    def test_filter_without_a_name_counts_every_article(self):
+        class Alpaca:
+            def avg_daily_volume(s, sym, days): return 1000.0
+            def asset_name(s, sym): raise HttpError("HTTP 500")
+
+        peer = ("Nebius: Neocloud Bubble Burst Is Already Happening (Rating Downgrade)", "")
+        self.assertEqual(self.filter_run(Alpaca(), [peer]), [])
+        self.assertIn("'downgrade' in \"Nebius", self.kills("filter")[-1]["reason"])
+
+
+class CryptoCapTest(_RulesBase):
+    """3 of 10 slots stay free for stocks: crypto (and gold tokens) fill at most 7."""
+
+    class Alpaca:
+        def session_window(s, kind="regular"):
+            now = us_eastern()
+            return now - dt.timedelta(hours=2), now + dt.timedelta(hours=4)
+
+    def coin(self, i, px=100.0):
+        return cand(symbol=f"C{i}USDT", base=f"C{i}", bid=px - 0.01, ask=px)
+
+    def test_eighth_crypto_is_refused_but_a_stock_gets_in(self):
+        self.assertEqual(self.risk.crypto_cap(), 7)
+        for i in range(7):
+            self.enter(self.coin(i))
+        self.assertEqual(self.refusal(self.coin(7)), "crypto slots full: 7/7 (3 of 10 slots kept for stocks)")
+        self.risk.alpaca = self.Alpaca()
+        self.assertIsNone(self.refusal(cand(symbol="QQQ", base="NDX", market="stock", bid=100.0, ask=100.02)))
+
+    def test_holdings_above_the_cap_are_sold_weakest_first(self):
+        self.risk.r["reserve_slots_for_stocks"] = 0              # as before the reserve existed
+        for i in range(10):
+            self.enter(self.coin(i))
+        self.assertEqual(len(self.store.open_positions()), 10)
+        self.risk.r["reserve_slots_for_stocks"] = 3
+        for i, p in enumerate(self.store.open_positions()):    # C0 weakest ... C9 strongest
+            px = p.entry_price * (0.97 + i * 0.01)
+            self.px[p.symbol] = (px, px)
+        self.risk.monitor()
+        left = sorted(p.base for p in self.store.open_positions())
+        self.assertEqual(left, [f"C{i}" for i in range(3, 10)])
+        sold = self.store.q("SELECT base, exit_reason FROM positions WHERE status='closed' ORDER BY base")
+        self.assertEqual([(r["base"], r["exit_reason"]) for r in sold],
+                         [(f"C{i}", "slot reserve: crypto max 7") for i in range(3)])
+        self.risk.monitor()                                      # at the cap: nothing more is sold
+        self.assertEqual(len(self.store.open_positions()), 7)
+
+    def test_zero_means_no_cap_and_bad_values_are_refused(self):
+        cfg = Config(json.loads(json.dumps(self.cfg)))
+        cfg["risk"]["reserve_slots_for_stocks"] = 0
+        r = Risk(cfg, self.store, self.brokers, None, None, self.log, self.tmp)
+        self.assertIsNone(r.crypto_cap())
+        self.assertEqual(r.rules_summary(), "stop -8%, trail 8% after +15%")
+        for bad in (-1, 11, 2.5, True, "3"):
+            cfg["risk"]["reserve_slots_for_stocks"] = bad
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                Risk(cfg, self.store, self.brokers, None, None, self.log, self.tmp)
 
 
 if __name__ == "__main__":
